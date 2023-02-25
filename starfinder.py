@@ -8,24 +8,15 @@ from astropy.visualization.mpl_normalize import ImageNormalize
 import cv2
 from photutils.aperture import CircularAperture
 from astropy.stats import SigmaClip
-from photutils.background import Background2D, MedianBackground
+from photutils.background import Background2D, SExtractorBackground
 from astropy.stats import sigma_clipped_stats
 from photutils.detection import DAOStarFinder, IRAFStarFinder
 from math import sqrt
+import astropy.units
+import os
 
-# TODO organizar as bibliotecas e packages
+'''''''                    SETUP PARAMETERS                                                                      '''''''
 
-# # Path to the original .fits files and conversion to the user OS
-# # fits_files = PureWindowsPath("./stars/fits/*.fits")
-# fits_files = PureWindowsPath("C:/Users/Sengo/Desktop/Dissertação/stars/fits/*.fits")
-# fits_files = Path(fits_files)
-# fits_files = glob.glob(str(fits_files))
-#
-# # Path to the the images containing the stars divides by telescope .fits files and conversion to the user OS
-# # stars_files = PureWindowsPath("./stars/images/*.fits")
-# stars_files = PureWindowsPath("C:/Users/Sengo/Desktop/Dissertação/stars/images/*.fits")
-# stars_files = Path(stars_files)
-# stars_files = glob.glob(str(stars_files))
 
 # Width and Height for each telescope in original .fits file
 min_h = 0
@@ -36,26 +27,54 @@ t2_max = t3_min = 500
 t3_max = t4_min = 750
 t4_max = 1000
 
-# Number of caracters in the path and the '.fits'
-path = 46
-f_type = -5
 
 # Setup for Background Estimator
-bkg_estimator = MedianBackground()
+bkg_estimator = SExtractorBackground()
 sigma_clip = SigmaClip(sigma=3.0)
 
 # Setup Image Normalization for plot
 norm = ImageNormalize(stretch=SqrtStretch())
 
+# Setup for find_stars()
+mask_min = 50
+mask_max = 200
+mask_blob_x_min = 155
+mask_blob_x_max = 165
+mask_blob_y_min = 65
+mask_blob_y_max = 75
 
-# Function that opens every .fits file in the fits folder and divides the images based on telescope and frame. When
-# opening the new .fits, the data is organized in an array where the first position denotes the frame and the second
-# position the telescope
+flux_min_normal = 15
+flux_min_stitch = 25
+peak_min_stitch = 45
+sharpness_max_stitch = 85
+
+# Corners Coordinates List
+extra_matches = [[0, 0], [250, 250], [250, 0], [0, 250]]
+
+'''''''                    ACQUIRE DATA FROM FITS FILE                                                           '''''''
+
+
 def div_files(fits_files):
+    """
+    Function that opens every .fits file in the fits folder and divides the images based on telescope and frame. When
+    opening the new .fits, the data is organized in an array where the first position denotes the frame and the second
+    position the telescope
+    
+    :param fits_files: path to where the fits files are located
+    
+    Example:
+    
+    fits_files = PureWindowsPath("./stars/fits/*.fits")
+    
+    fits_files = Path(fits_files)
+    
+    fits_files = glob.glob(str(fits_files))
+    """
     # Iterates between every .fits file in the fits folder
     for fits_file in fits_files:
         # Name of the new file
-        nname = fits_file[path:-f_type]
+        nname = os.path.splitext(os.path.basename(fits_file))[0]
+        print(nname)
 
         # Open .fits file and acquire data
         gravity_file = fits.open(fits_file)
@@ -83,24 +102,17 @@ def div_files(fits_files):
         gravity_file.close()
 
 
-# TODO: NÃO SEI AS DIMENSÕES QUE É SUPOSTO RECORTAR NA IMAGEM
-
-# Background from image
-# def backgroundNoise():
-#     bg_file = fits.open('C:/Users/Sengo/Desktop/Dissertação/stars/outros/ACQ_dark07_20171229_DIT_mean.fits')
-#
-#     img_bg = bg_file[0].data
-#     bg = img_bg[0:250, 0:250]
-#     mean, median, std = sigma_clipped_stats(bg, sigma=3.0)
-#
-#     bg_file.close()
-#
-#     return bg
+'''''''                    BACKGROUND DETECTION AND REMOVAL                                                      '''''''
 
 
-# Function to estimate background image and acquire mean, median and standard deviation of the original image
-# with the background removed.
-def backgroundNoise(img):
+def background_noise(img):
+    """
+    Function to estimate background image and acquire mean, median and standard deviation of the original image
+    with the background removed.
+    
+    :param img:  image to acquire background data
+    :return: image, mean, median and standard deviation of background
+    """
     # Aquire background estimation
     bkg = Background2D(img, (50, 50), filter_size=(3, 3), sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
     # Acquire mean, median and standard deviation of original image without background
@@ -109,40 +121,89 @@ def backgroundNoise(img):
     return bkg.background, mean, median, std
 
 
-# TODO: COMO RECORTAR OS DEAD PIXEIS DO FICHEIRO FITS PARA APLICAR AQUI (DIMENSÕES)
-# Funtion to prepare the image for further analysis, removing the background
-def prepareStars(img, noise):
+def prepare_stars(img, noise):
+    """
+    Funtion to prepare the image for further analysis, removing the background
+    
+    :param img: image to remove noise
+    :param noise: image of the noise to be removed
+    :return: image with noise removed
+    """
     # Subtract the noise
     img = img - noise
 
     return img
 
 
-# Function used to acquire the centroid, peak and flux of the sources in the image
-def findStars(img, std):
+'''''''                    STAR IDENTIFICATION                                                                   '''''''
+
+
+def find_stars(img, std, img_type):
+    """
+        Function used to identificate and qualify stars in an image 
+
+        :param img: image to find stars
+        :param std: standard deviation of the background
+        :param img_type: 'normal' -> for raw image or stacking of telescopes
+                         'stitched' -> for master image
+        :return: list containing all the stars that meet the criteria 
+    """
+    
     # Setup for Star Finder
-    daofind = DAOStarFinder(fwhm=5.0, threshold=15. * std, brightest=3)
-    # Find sources in an image, cataloging them
-    sources = daofind(img)
+    daofind = DAOStarFinder(fwhm=7.0, threshold=3. * std)
 
-    return sources
+    # Create mask for region of interest
+    mask = np.zeros(img.shape, dtype=bool)
+    mask[:][:] = True
+    mask[mask_min:mask_max, mask_min:mask_max] = False
+
+    # To identify stars in the frames and stacked telescope images
+    if img_type == 'normal':
+        # Find sources in an image, cataloging them
+        stars = daofind(img, mask=mask)
+        # In case no stars are identified that fit our criteria
+        if type(stars) == astropy.units.decorators.NoneType:
+            return stars
+        # Filter stars by flux
+        stars = stars[stars['flux'] > flux_min_normal]
+
+        return stars
+    # To identify stars in the master image
+    elif img_type == 'stitched':
+        # Remove broken pixels blob
+        mask[mask_blob_x_min:mask_blob_x_max, 
+             mask_blob_y_min:mask_blob_y_max] = True
+        # Find sources in an image, cataloging them
+        stars = daofind(img, mask=mask)
+        # In case no stars are identified that fit our criteria
+        if type(stars) == astropy.units.decorators.NoneType:
+            return stars
+        # Filter stars by flux and peak
+        stars = stars[stars['flux'] > flux_min_stitch]
+        stars = stars[stars['peak'] > peak_min_stitch]
+
+        return stars
+    # In case of unknown input, the stars are not filtered to fit extra criteria
+    else:
+        # Find sources in an image, cataloging them
+        stars = daofind(img, mask=mask)
+        # In case no stars are identified that fit our criteria
+
+        return stars
 
 
-# Function to acquire position of the three brightest stars in the sources catalog of the image
-def brightestStars(src):
-    # Organize the catalog by flux and acquire the three brightest stars
-    brightest = src['flux'].argsort()[::-1][:3]
+def main_stars(src, num):
+    """
+    Function that decomposes "num" of main stars into an list
 
-    return brightest
-
-
-# Function that decomposes the catalog into an list for easier access
-def brightestKeypoints(src):
-    # Acquire the positions in the catalog for the three brightest stars
-    positions = brightestStars(src)
-
+    :param src: table from photutils contaning the sources identified by the find_stars function
+    :param num: number of stars desired
+    :return: return a list containing the info about the stars filtered
+    """
+    # Function to acquire position of "num" brightest stars in the sources catalog of the image
+    positions = src['flux'].argsort()[::-1][:num]
     star_data = []
-    # For the three brightest stars, append relevant data into a list
+    # For the "num" brightest stars, append relevant data into a list
     for i in range(0, len(positions)):
         star = [src['id'][positions[i]], src['xcentroid'][positions[i]], src['ycentroid'][positions[i]],
                 src['peak'][positions[i]], src['flux'][positions[i]], src['mag'][positions[i]]]
@@ -151,23 +212,56 @@ def brightestKeypoints(src):
     return star_data
 
 
-# Function that puts the centroids in an list for the Star Matcher
-def starsCoordinates(b_src):
+'''''''                    COORDINATE FUNCTIONS                                                                  '''''''
+
+
+def get_coordinates(b_src):
+    """
+    Function to append the coordinates of a list of stars into another list for easier access
+
+    :param b_src: sources to acquire coordinates (usually the filteres brightest sources)
+    :return: list contaning only the coordinates fo the stars
+    """
     stars_coords = []
-    # Append x and y coordinate respectively into a list
     for i in range(0, len(b_src)):
         coord = [b_src[i][1], b_src[i][2]]
         stars_coords.append(coord)
+    return stars_coords
+
+
+def stars_coordinates(img, num):
+    """
+    Function that identifies the stars and acquires their coordinates for later matching
+
+    :param img: image to acquire stars
+    :param num: number of stars desired
+    :return: list containing the coordinates of the identified stars
+    """
+    # Acquire standard deviation
+    _, _, _, std = background_noise(img)
+    # Find sources in the image
+    img_src = find_stars(img, std, 'normal')
+    # Filter to only obtain the three brightest stars
+    b_src = main_stars(img_src, num)
+    # Acquire the coordinates of said stars for easier manipulation
+    # Append x and y coordinate respectively onto a list
+    stars_coords = get_coordinates(b_src)
 
     return stars_coords
 
 
-# Function that matches the three brightest of two telescopes through the coordinates
-def starsMatcher(src_coords, dst_coords):
+def stars_matcher(src_coords, dst_coords):
+    """
+    Function that matches the three brightest of two telescopes through the coordinates
+
+    :param src_coords: coordinates of the source image
+    :param dst_coords: coordinates of the destination image
+    :return: a list contaning all the matches grouped, a list contaning only the matched coordinates of the source image
+    and a list contaning only the matched coordinates of the destination image
+    """
     matches_list = []
     match_1 = []
     match_2 = []
-
     # Match the coordinates of the same star between the two images
     for c1 in range(len(src_coords)):
         for c2 in range(len(dst_coords)):
@@ -179,26 +273,28 @@ def starsMatcher(src_coords, dst_coords):
                 matches_list.append(match)
                 match_1.append(src_coords[c1])
                 match_2.append(dst_coords[c2])
-
-    # Append the same corner of the images as matches
-    match_1.append([0, 0])
-    match_2.append([0, 0])
-    matches_list.append([[0, 0], [0, 0]])
+    # Append the corners of the images as a matches until four matches are reached to estimate homography
+    i = 0
+    while len(matches_list) < 4:
+        match_1.append(extra_matches[i])
+        match_2.append(extra_matches[i])
+        matches_list.append(extra_matches[i])
+        i = i + 1
 
     return matches_list, np.array(match_1), np.array(match_2)
 
 
-# Function to print the catalog of the stars in an image
-def printSources(src):
-    # For consistent table output
-    for col in src.colnames:
-        src[col].info.format = '%.8g'
-
-    print(src)
+'''''''                    MANIPULATION OF IMAGES                                                                '''''''
 
 
-# Function that warps images given the estimated homography
-def warpImage(src_img, H):
+def warp_image(src_img, H):
+    """
+    Function that warps images given the estimated homography
+
+    :param src_img: image to be applied the homography estimate
+    :param H: homography estimate
+    :return: warped image
+    """
     # Warp the source image to the destination image using the estimated homography
     # Flags:
     #       cv2.INTER_LINEAR: Linear interpolation is used, which produces smoother results than the default method
@@ -208,57 +304,291 @@ def warpImage(src_img, H):
     warped_img = cv2.warpPerspective(src_img, H, (src_img.shape[1], src_img.shape[0]),
                                      flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT,
                                      borderValue=(0, 0, 0))
+    
     return warped_img
 
 
-# Function that joins two images, given the estimated homography
-def joinImages_homography(src_img, dst_img, H):
-    # Define the corner points of the images (they share all four corners)
-    dst_corners = np.array([[0, 0], [0, dst_img.shape[0]], [dst_img.shape[1], dst_img.shape[0]], [dst_img.shape[1], 0]],
-                           dtype=np.float64)
+def join_images(img_list):
+    """
+    Function that joins a list of images and divides the result by the median of the result
 
-    # Warp the source image to the destination image using the estimated homography
-    warped_img = warpImage(src_img, H)
+    :param img_list: list of the images to be stacked
+    :return: stacked image
+    """
+    list_sum = np.sum(img_list, axis=0)
+    final_img = list_sum / np.mean(list_sum)
 
-    # Apply the warped image as a mask on the destination image
-    mask = np.zeros_like(dst_img, dtype=np.float64)
-    mask = cv2.fillConvexPoly(mask, dst_corners.astype(np.int32), (1,))
-    masked_dst_img = cv2.multiply(dst_img, mask)
-
-    # Combine the warped image and the masked destination image
-    result = cv2.add(warped_img, masked_dst_img, dtype=cv2.CV_64F) / 2
-
-    return result
+    return final_img
 
 
-# Function that joins two images
-def joinImages(img_1, img_2):
-    # Create an image which is the average between the two
-    #result = cv2.add(img_1, img_2, dtype=cv2.CV_64F) / 2
-    result = (img_1 + img_2) / 2
-
-    return result
+'''''''                    QUALITY CHECK                                                                         '''''''
 
 
-# Calculate the new coordinates to estimate the homography
-def newCoords(matches_list):
-    new_coords = []
-    # The new coordinates are the average of the two
-    for coords in matches_list:
-        c_x = (coords[0][0] + coords[1][0]) / 2
-        c_y = (coords[0][1] + coords[1][1]) / 2
+def frame_quality(img_list, num):
+    """
+    Function that evaluates every frame in a file, creating a list containing every frame that detectes at least "num"
+    of stars. It also removes the background from the frames.
 
-        # Append the new coordinates to an array
-        new_c = [c_x, c_y]
-        new_coords.append(new_c)
+    :param img_list: list of frames to be qualified
+    :param num: number of stars required for the frame to be deemed usable
+    :return: return a list for the usable frames organized by telescope
+    """
+    frame_list = []
+    # Iterate between all frames and all telescopes
+    for tele in range(len(img_list[0])):
+        tele_list = []
+        for frame in range(len(img_list)):
+            img = img_list[frame][tele]
+            # Acquire background and standard deviation of the frame
+            bg, _, _, std = background_noise(img)
+            # Prepare frame for identification of stars
+            img = prepare_stars(img, bg)
+            # Acquire sources in the images
+            stars = find_stars(img, std, 'normal')
+            # In case no stars are identified that fit our criteria
+            if type(stars) == astropy.units.decorators.NoneType:
+                continue
+            if len(stars) >= num:
+                tele_list.append(img)
 
-    return np.array(new_coords)
+        frame_list.append(tele_list)
+
+    return frame_list
 
 
-# Plot a single image of the stars
-def showStars(img, title):
-    plt.imshow(img, norm=norm, origin='lower', cmap='Greys_r',
+# 
+def tele_quality(img_list, num):
+    """
+    Function that evaluates every stacked image for all 4 telescopes, creating a list containing every image that
+    detectes at least "num" stars. It also removes the background from the stacked images.
+
+    :param img_list: list of stacked images to be qualified
+    :param num: number of stars required for the image to be deemed usable
+    :return: return a list contaning the filtered stacked images
+    """
+    stitched_quality = []
+    # Iterate between all stacked images
+    for tele in img_list:
+        # Acquire background and standard deviation of the frame
+        bg, _, _, std = background_noise(tele)
+        # Prepare frame for identification of stars
+        img = prepare_stars(tele, bg)
+        # Acquire sources in the images
+        stars = find_stars(tele, std, 'normal')
+        # In case no stars are identified that fit our criteria
+        if type(stars) == astropy.units.decorators.NoneType:
+            continue
+        if len(stars) >= num:
+            stitched_quality.append(tele)
+
+    return stitched_quality
+
+
+# Function that evaluates the final stitched image, creating a list containing every stitched image that
+# detectes at least three stars with a flux bigger than 3. It also removes the background from the stitched images.
+def stitch_quality(stitched_img, num):
+    """
+    Function that evaluates every stacked image for all 4 telescopes, creating a list containing every image that
+    detectes at least "num" stars. It also removes the background from the stacked images.
+
+    :param stitched_img: master image
+    :param num: number of stars required for the master image to be considered a success
+    :return: True -> if the master image is considered good
+             False -> if the master image is considered not good
+    """
+    # Acquire background and standard deviation of the frame
+    bg, _, _, std = background_noise(stitched_img)
+    # Prepare frame for identification of stars
+    stitched_img = prepare_stars(stitched_img, bg)
+    # Acquire sources in the images
+    stars = find_stars(stitched_img, std, 'stitched')
+    # In case no stars are identified that fit our criteria
+    if type(stars) == astropy.units.decorators.NoneType:
+        return False
+    if len(stars) >= num:
+        return True
+    else:
+        return False
+
+
+'''''''                    STITCH FUNCTIONS                                                                      '''''''
+
+
+def tele_stitcher(img_list):
+    """
+    Function to stack frames by telescope after frames ahave been qualified
+
+    :param img_list: list for the frames of the telescope
+    :return: stacked imaged of the telescope
+    """
+    # Stack the frames together to form one single image per telescope
+    tele_list = []
+    for tele in img_list:
+        # Add all usable frames together
+        res_tele = join_images(tele)
+        # After joining all frames of an telescope, append the final image to a list
+        tele_list.append(res_tele)
+
+    return tele_list
+
+
+def final_stitcher(img_list):
+    """
+    Function to find homography and stitch all the telescope perspectives into a master image
+    :param img_list: list of images of the four telescopes
+    :return: master image
+    """
+    # Define the telescope 1 as the reference for the stitching
+    master_img = img_list[0]
+    warped_list = [master_img]
+    # Iteratively stitch all the final telescope images together
+    for tele in range(1, len(img_list)):
+
+        master_coords = stars_coordinates(master_img, 3)
+
+        tele_coords = stars_coordinates(img_list[tele], 3)
+
+        # Match the stars between the two images
+        matches, master_match, tele_match = stars_matcher(master_coords, tele_coords)
+
+        # Estimate the homography using the cv2 library
+        H, _ = cv2.findHomography(tele_match, master_match)
+
+        # Warp image base on the estimated homography
+        warped_tele = warp_image(img_list[tele], H)
+        # Append the warped image from the telescope into a list
+        warped_list.append(warped_tele)
+
+    # Stack images to form the master image
+    final_img = join_images(warped_list)
+
+    return final_img
+
+
+'''''''                    PLT FUNCTIONS                                                                         '''''''
+
+
+def show_stars(img, title, ext, save):
+    """
+    Plot a single image of the stars
+
+    :param img: image to be ploted
+    :param title: title of the plot and name of the file
+    :param ext: extention for the file
+    :param save: True -> Save the image in "stitched" folder
+                 False -> Don't save the image
+    """
+    plt.imshow(img, norm=norm, origin='lower', cmap='inferno',
                interpolation='nearest')
     plt.title(title, fontweight='bold')
+    plt.tight_layout()
+    if save is True:
+        plt.savefig('./stars/stitched/{}_{}.png'.format(title, ext))
     plt.show()
 
+
+def show_apertures(img, src, title, save):
+    """
+    Plot apertures for a single image of the stars
+
+    :param img: image to be ploted
+    :param src: sources of the image to be identified
+    :param title: title of the plot and name of the file
+    :param save: True -> Save the image in "stitched" folder
+                 False -> Don't save the image
+    """
+    # Apply circles in the positions of the sources
+    positions = np.transpose((src['xcentroid'], src['ycentroid']))
+    apertures = CircularAperture(positions, r=4.0)
+
+    # Plot image
+    plt.imshow(img, cmap='inferno', origin='lower', norm=norm,
+               interpolation='nearest')
+    apertures.plot(color='white', lw=1.5, alpha=0.5)
+    plt.title(title, fontweight='bold')
+    plt.tight_layout()
+    if save is True:
+        plt.savefig('./stars/stitched/{}_{}.png'.format(title, "aprt"))
+    plt.show()
+
+
+def show_telescopes(img_list, name, save):
+    """
+    Plot all stacked images for the telescopes into a single image
+
+    :param img_list: list of images of all four telescopes
+    :param name: name fo the file
+    :param save: True -> Save the image in "stitched" folder
+                 False -> Don't save the image
+    """
+    # Create a figure and subplots
+    fig, axs = plt.subplots(nrows=2, ncols=2)
+
+    # Plot each image in a subplot
+    axs[0, 0].imshow(img_list[0], norm=norm, origin='lower', cmap='inferno',
+                interpolation='nearest')
+    axs[0, 1].imshow(img_list[1], norm=norm, origin='lower', cmap='inferno',
+                interpolation='nearest')
+    axs[1, 0].imshow(img_list[2], norm=norm, origin='lower', cmap='inferno',
+                interpolation='nearest')
+    axs[1, 1].imshow(img_list[3], norm=norm, origin='lower', cmap='inferno',
+                interpolation='nearest')
+
+    # Idetify telescope in subplot
+    axs[0, 0].set_title('Telescope #1')
+    axs[0, 1].set_title('Telescope #2')
+    axs[1, 0].set_title('Telescope #3')
+    axs[1, 1].set_title('Telescope #4')
+
+    plt.tight_layout()
+    if save is True:
+        plt.savefig('./stars/stitched/{}_{}.png'.format(name, "telescopes"))
+    plt.show()
+
+
+def print_centroid(positions, names, title, name, ext, xlabel, ylabel, save):
+    """
+
+    :param positions: list of one axis of the coordinates for the centroid
+    :param names: list of names for the files
+    :param title: title of the ploted image
+    :param name: name for the saved file
+    :param ext: extention for the saved file
+    :param xlabel: label for the x axis
+    :param ylabel: label for the y axis
+    :param save: True -> Save the image in "stitched" folder
+                 False -> Don't save the image
+    """
+    # Calculate the MAD
+    median = np.median(positions)
+    mad = np.median(np.abs(positions - median))
+    # Aprox ratio between mad and standard deviation for a normal distribution
+    stdev_est = 1.4826 * mad
+    # Plot image
+    plt.figure()
+    plt.title(title)
+    plt.errorbar(np.arange(len(names)), positions, yerr=stdev_est, fmt='.', ecolor='g',
+                 capsize=5)
+    plt.axhline(median, color='r', linestyle='--')
+    plt.xticks(np.arange(len(names)), names, rotation=90)
+    plt.ylabel(ylabel)
+    plt.xlabel(xlabel)
+    plt.grid()
+    plt.tight_layout()
+    if save is True:
+        plt.savefig('./stars/graphs/{}_{}.png'.format(name, ext))
+
+    plt.show()
+
+
+def print_sources(src):
+    """
+    Function to print the catalog of the stars in an image
+
+    :param src: sources identifies in an image
+    """
+    # For consistent table output
+    for col in src.colnames:
+        src[col].info.format = '%.8g'
+
+    print(src)
