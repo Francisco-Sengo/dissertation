@@ -7,8 +7,9 @@ from tqdm import tqdm
 import starfinder as sf
 import os
 import warnings
-warnings.filterwarnings('ignore')
 
+# Turn off warning in case the DAOStarFinder doesn´t identify any stars that fit our criteria
+warnings.filterwarnings('ignore')
 
 '''''''                    SETUP PARAMETERS                                                                      '''''''
 # Path to the the images containing the stars divides by telescope .fits files and conversion to the user OS

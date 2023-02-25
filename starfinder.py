@@ -1,8 +1,6 @@
 import numpy as np
 from astropy.io import fits
 import matplotlib.pyplot as plt
-import glob
-from pathlib import Path, PureWindowsPath
 from astropy.visualization import SqrtStretch
 from astropy.visualization.mpl_normalize import ImageNormalize
 import cv2
@@ -10,7 +8,7 @@ from photutils.aperture import CircularAperture
 from astropy.stats import SigmaClip
 from photutils.background import Background2D, SExtractorBackground
 from astropy.stats import sigma_clipped_stats
-from photutils.detection import DAOStarFinder, IRAFStarFinder
+from photutils.detection import DAOStarFinder
 from math import sqrt
 import astropy.units
 import os
