@@ -38,7 +38,6 @@ save_centroids_three = True
 save_centroids_all = True
 
 '''''''                    OTHER SETUPS                                                                          '''''''
-
 # Name list for plots
 name_list = []
 
@@ -63,7 +62,6 @@ main_name = []
 new_name = []
 
 '''''''---------------------STITCHING ALGORITHM------------------------------------------------------------------'''''''
-
 # Loop to access all files in fits folder
 for fits_file in tqdm(stars_files):
 

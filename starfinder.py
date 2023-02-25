@@ -13,9 +13,8 @@ from math import sqrt
 import astropy.units
 import os
 
+
 '''''''                    SETUP PARAMETERS                                                                      '''''''
-
-
 # Width and Height for each telescope in original .fits file
 min_h = 0
 max_h = 250
