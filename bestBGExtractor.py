@@ -10,8 +10,6 @@ from photutils.datasets import load_star_image
 hdu = load_star_image()
 data = hdu.data[0:401, 0:401]
 
-import numpy as np
-
 stars_file = fits.open('C:/Users/Sengo/Desktop/Dissertação/stars/images/GRAVI.2021-06-25T04_17_48.414_pt.fits')
 bg_file = fits.open('C:/Users/Sengo/Desktop/Dissertação/stars/outros/ACQ_dark07_20171229_DIT_mean.fits')
 

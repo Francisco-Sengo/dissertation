@@ -8,6 +8,19 @@ import starfinder as sf
 import os
 import warnings
 
+'''''''''
+Example of usage for the starfinder.py library in the case of images acquired by GRAVITY of the SgrA object, 
+for two case scenarios:
+   - There are only two of the main stars visible -> in this case, due to the lack of points to estimate a proper 
+   homography, the results don't prove to be as good as the next case. Besides this, in many of the frames, the supposed
+   brightest star isn´t constant, so a special filter is made to correct that for data analysis.
+   - Given that are three main stars in this scenario, an estimate of the homography is much more robust, having 
+   perfomed better.
+
+This file also contains an example of how to properly use all the functions in the library, but a simpler version of 
+this algorithm is also available at GitHub.
+'''''''''
+
 # Turn off warning in case the DAOStarFinder doesn´t identify any stars that fit our criteria
 warnings.filterwarnings('ignore')
 
@@ -16,6 +29,9 @@ warnings.filterwarnings('ignore')
 stars_files = PureWindowsPath("./stars/images/*.fits")
 stars_files = Path(stars_files)
 stars_files = glob.glob(str(stars_files))
+
+# Number of expecteded main stars for image assessment
+num_stars = 2
 
 # Setup for plots
 # True -> Yes | False -> No
@@ -57,9 +73,6 @@ pos_y_b = []
 
 # List containing only the names of the files with three stars that the stitched images that passed the quality test
 main_name = []
-
-# List containing only the names of the all the stitched images that passed the quality test
-new_name = []
 
 '''''''---------------------STITCHING ALGORITHM------------------------------------------------------------------'''''''
 # Loop to access all files in fits folder
