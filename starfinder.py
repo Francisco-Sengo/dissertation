@@ -90,9 +90,7 @@ def div_files(fits_files):
         # Create a .fits file containing only the telescope images of the stars
         hdu_list = fits.PrimaryHDU(tele_list)
 
-        # hdu_list.writeto('./stars/images/{}_{}.fits'
-        #                 .format(nname, 'pt'))
-        hdu_list.writeto('C:/Users/Sengo/Desktop/Dissertação/stars/images/{}_{}.fits'
+        hdu_list.writeto('./stars/images/{}_{}.fits'
                          .format(nname, 'pt'))
 
         # Close .fits file
