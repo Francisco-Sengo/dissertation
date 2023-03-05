@@ -12,6 +12,8 @@ from photutils.detection import DAOStarFinder
 from math import sqrt
 import astropy.units
 import os
+from astropy.modeling.models import Gaussian2D
+from astropy.modeling.fitting import LevMarLSQFitter
 
 
 '''''''                    SETUP PARAMETERS                                                                      '''''''
@@ -29,24 +31,17 @@ t4_max = 1000
 bkg_estimator = SExtractorBackground()
 sigma_clip = SigmaClip(sigma=3.0)
 
-# Setup Image Normalization for plot
-norm = ImageNormalize(stretch=SqrtStretch())
-
 # Setup for find_stars()
 mask_min = 50
 mask_max = 200
-mask_blob_x_min = 155
-mask_blob_x_max = 165
-mask_blob_y_min = 65
-mask_blob_y_max = 75
 
-flux_min_normal = 15
-flux_min_stitch = 25
-peak_min_stitch = 45
-sharpness_max_stitch = 85
 
-# Corners Coordinates List
-extra_matches = [[0, 0], [250, 250], [250, 0], [0, 250]]
+# Setup for mask
+thresh_type = cv2.THRESH_BINARY
+# Create kernels for masking process
+kernel_erode = np.ones((5, 5), 'uint8')
+kernel_dilate = np.ones((5, 5), 'uint8')
+
 
 '''''''                    ACQUIRE DATA FROM FITS FILE                                                           '''''''
 
@@ -119,7 +114,7 @@ def background_noise(img):
 def prepare_stars(img, noise):
     """
     Funtion to prepare the image for further analysis, removing the background
-    
+
     :param img: image to remove noise
     :param noise: image of the noise to be removed
     :return: image with noise removed
@@ -130,22 +125,81 @@ def prepare_stars(img, noise):
     return img
 
 
+def normalize_img(original):
+    """
+    Function to normalize the image to apply the median blur
+
+    :param original: original image to normmalize
+    :return: normalized image
+    """
+
+    # Copy image so to not modify it
+    img = original.copy()
+    # Maximum and Minimum values for the image
+    min_val = np.min(img)
+    max_val = np.max(img)
+
+    # Normalize image
+    img_normalized = (img - min_val) / (max_val - min_val)
+    img_normalized *= 255
+    img_normalized = img_normalized.astype(np.uint8)
+
+    return img_normalized
+
+
+def mask_roi(roi):
+    """
+    Function to filter noise to acquire stats of a star
+
+    :param roi: region of interest where the star resides
+    :return: roi with a mask applied, leaving only the star visible
+    """
+    # Copy image so to not modify it
+    img = roi.copy()
+
+    # Normalize image to apply Median Blur
+    norm_roi = normalize_img(img)
+    blured = cv2.medianBlur(norm_roi, 5)
+
+    # Create threshold and max value to filter from blured image
+    threshold = np.mean(blured)*2
+    max_value = np.max(blured)
+    # Filter pixeis
+    binary = cv2.threshold(img, threshold, max_value, thresh_type)[1]
+    # Apply Opening method to create mask
+    opening = cv2.erode(binary, kernel_erode, iterations=1)
+    opened = cv2.dilate(opening, kernel_dilate, iterations=1)
+
+    # Apply mask to region of interest
+    h = img.shape[0]
+    w = img.shape[1]
+    for y in range(0, h):
+        for x in range(0, w):
+            if opened[y, x] == 0:
+                img[y, x] = 0
+
+    return img
+
+
 '''''''                    STAR IDENTIFICATION                                                                   '''''''
 
 
-def find_stars(img, std, img_type):
+def find_stars(img, std, img_type='normal', exp_fwhm=7.0, flux_min_normal=5, flux_min_stitch=25, peak_min_stitch=45):
     """
         Function used to identificate and qualify stars in an image 
 
         :param img: image to find stars
         :param std: standard deviation of the background
-        :param img_type: 'normal' -> for raw image or stacking of telescopes
+        :param img_type: 'normal' (Default) -> for raw image or stacking of telescopes
                          'stitched' -> for master image
+        :param exp_fwhm: expected fwhm for the stars (optional)
+        :param flux_min_normal : minimum flux for the 'normal' star_finder to consider a star (optional)
+        :param flux_min_stitch: minimum flux for the 'stitched' star_finder to consider a star (optional)
+        :param peak_min_stitch: minimum flux for the 'stitched' star_finder to consider a star (optional)
         :return: list containing all the stars that meet the criteria 
     """
-    
     # Setup for Star Finder
-    daofind = DAOStarFinder(fwhm=7.0, threshold=3. * std)
+    daofind = DAOStarFinder(fwhm=exp_fwhm, threshold=3. * std)
 
     # Create mask for region of interest
     mask = np.zeros(img.shape, dtype=bool)
@@ -165,9 +219,6 @@ def find_stars(img, std, img_type):
         return stars
     # To identify stars in the master image
     elif img_type == 'stitched':
-        # Remove broken pixels blob
-        mask[mask_blob_x_min:mask_blob_x_max, 
-             mask_blob_y_min:mask_blob_y_max] = True
         # Find sources in an image, cataloging them
         stars = daofind(img, mask=mask)
         # In case no stars are identified that fit our criteria
@@ -185,6 +236,74 @@ def find_stars(img, std, img_type):
         # In case no stars are identified that fit our criteria
 
         return stars
+
+
+def star_stats(img_o, src, std, name='Default Name', exp_fwhm=9, plt_gauss=True, save=False):
+    """
+    Function to calculate Full Width Half Maximum of a star
+
+    :param img_o: image to acquire the star
+    :param src: coordinates of the centroid of the star
+    :param std: standard deviation used to acquire stars
+    :param name: name of the file
+    :param exp_fwhm: expected odd fwhm for the star (optional)
+    :param plt_gauss: True -> plt brighest star and fitted gaussian |
+                      False -> don't plt brighest star and fitted gaussian
+    :param save: True -> Save the image in "brightest" folder |
+                 False -> Don't save the image
+    :return: full width half maximum of the star, the standard deviation of the position of the star and the maximum
+    amplitude of the star
+    """
+    # Copy the image
+    img = img_o.copy()
+    # Isolate the star
+    star_pixels = stars_box(img, src, exp_fwhm)
+    # Mask star
+    masked = mask_roi(star_pixels)
+    # Acquire max value of the star
+    amp_max = np.max(masked)
+
+    # Estimate initial parameters for 2D Gaussian fit
+    amp = amp_max - np.min(star_pixels)
+    # Centroid of the box containing the star
+    x_mean, y_mean = exp_fwhm, exp_fwhm
+    # Initial guess for standard deviation
+    x_stddev = y_stddev = std
+    # Initial guess for rotation angle (radians)
+    theta = 0.0
+    init_params = {'amplitude': amp, 'x_mean': x_mean, 'y_mean': y_mean,
+                   'x_stddev': x_stddev, 'y_stddev': y_stddev, 'theta': theta}
+    gauss2d_init = Gaussian2D(**init_params)
+
+    # Fit 2D Gaussian model to star pixels
+    fit_p = LevMarLSQFitter()
+    y, x = np.mgrid[:2*exp_fwhm, :2*exp_fwhm]
+    gauss2d_fit = fit_p(gauss2d_init, x, y, masked)
+
+    x_std = gauss2d_fit.x_stddev.value
+    y_std = gauss2d_fit.y_stddev.value
+
+    # Calculate FWHM from standard deviation of best-fit Gaussian
+    fwhm = np.mean([2.3548 * x_std, 2.3548 * y_std])
+
+    if plt_gauss is True:
+        # Create a figure and subplots
+        fig, axs = plt.subplots(nrows=1, ncols=2)
+
+        # Plot each image in a subplot
+        axs[0].imshow(star_pixels, origin='lower', cmap='inferno', vmin=0, vmax=amp)
+        axs[1].imshow(gauss2d_fit(x, y), origin='lower', cmap='inferno', vmin=0, vmax=amp)
+
+        # Idetify telescope in subplot
+        axs[0].set_title('Original Star')
+        axs[1].set_title('Fitted Gaussian')
+
+        plt.tight_layout()
+        if save is True:
+            plt.savefig('./stars/brightest/{}_{}.png'.format(name, 'brightest_star'))
+        plt.show()
+
+    return fwhm, x_std, y_std, amp_max
 
 
 def main_stars(src, num):
@@ -210,12 +329,12 @@ def main_stars(src, num):
 '''''''                    COORDINATE FUNCTIONS                                                                  '''''''
 
 
-def get_coordinates(b_src):
+def get_features(b_src):
     """
     Function to append the coordinates of a list of stars into another list for easier access
 
     :param b_src: sources to acquire coordinates (usually the filteres brightest sources)
-    :return: list contaning only the coordinates fo the stars
+    :return: list contaning only the coordinates of the stars
     """
     stars_coords = []
     for i in range(0, len(b_src)):
@@ -224,33 +343,35 @@ def get_coordinates(b_src):
     return stars_coords
 
 
-def stars_coordinates(img, num):
+def stars_features(img, exp_fwhm=7, flux_min_normal=5):
     """
     Function that identifies the stars and acquires their coordinates for later matching
 
     :param img: image to acquire stars
-    :param num: number of stars desired
+    :param exp_fwhm: expected fwhm for the stars (optional)
+    :param flux_min_normal : minimum flux for the 'normal' star_finder to consider a star (optional)
     :return: list containing the coordinates of the identified stars
     """
     # Acquire standard deviation
     _, _, _, std = background_noise(img)
     # Find sources in the image
-    img_src = find_stars(img, std, 'normal')
+    img_src = find_stars(img, std, 'normal', exp_fwhm, flux_min_normal)
+
     # Filter to only obtain the three brightest stars
-    b_src = main_stars(img_src, num)
     # Acquire the coordinates of said stars for easier manipulation
     # Append x and y coordinate respectively onto a list
-    stars_coords = get_coordinates(b_src)
+    stars_ft = get_features(img_src)
 
-    return stars_coords
+    return stars_ft
 
 
-def stars_matcher(src_coords, dst_coords):
+def stars_matcher(src_coords, dst_coords, distance=5):
     """
     Function that matches the three brightest of two telescopes through the coordinates
 
     :param src_coords: coordinates of the source image
     :param dst_coords: coordinates of the destination image
+    :param distance: distance between stars to be considered the same
     :return: a list contaning all the matches grouped, a list contaning only the matched coordinates of the source image
     and a list contaning only the matched coordinates of the destination image
     """
@@ -263,20 +384,31 @@ def stars_matcher(src_coords, dst_coords):
             # Calculate distance between two stars in different images
             d = sqrt((src_coords[c1][0] - dst_coords[c2][0]) ** 2 + (src_coords[c1][1] - dst_coords[c2][1]) ** 2)
             # If the distance is lower than 10 px, the two stars match
-            if d < 10:
-                match = [src_coords[c1], dst_coords[c2]]
+            if d < distance:
+                match = [[src_coords[c1][0], src_coords[c1][1]], [dst_coords[c2][0], dst_coords[c2][1]]]
                 matches_list.append(match)
-                match_1.append(src_coords[c1])
-                match_2.append(dst_coords[c2])
-    # Append the corners of the images as a matches until four matches are reached to estimate homography
-    i = 0
-    while len(matches_list) < 4:
-        match_1.append(extra_matches[i])
-        match_2.append(extra_matches[i])
-        matches_list.append(extra_matches[i])
-        i = i + 1
+                match_1.append([src_coords[c1][0], src_coords[c1][1]])
+                match_2.append([dst_coords[c2][0], dst_coords[c2][1]])
+
+    if len(matches_list) < 4:
+        return 0, 0, 0
 
     return matches_list, np.array(match_1), np.array(match_2)
+
+
+def stars_box(img, coords, box_size):
+    """
+    Function to isolate the a star for further analysis
+
+    :param img: image to acquire the star
+    :param coords: coordinates of the centroid of the star
+    :param box_size: size of the box to fit the brightest star
+    :return: "box" containing the star
+    """
+    star_pixels = img[int(coords[2]) - box_size:int(coords[2]) + box_size,
+                      int(coords[1]) - box_size:int(coords[1]) + box_size]
+
+    return star_pixels
 
 
 '''''''                    MANIPULATION OF IMAGES                                                                '''''''
@@ -319,19 +451,23 @@ def join_images(img_list):
 '''''''                    QUALITY CHECK                                                                         '''''''
 
 
-def frame_quality(img_list, num):
+def frame_quality(img_list, num, exp_fwhm=7, flux_min_normal=5):
     """
     Function that evaluates every frame in a file, creating a list containing every frame that detectes at least "num"
     of stars. It also removes the background from the frames.
 
     :param img_list: list of frames to be qualified
     :param num: number of stars required for the frame to be deemed usable
+    :param exp_fwhm: expected fwhm for the stars (optional)
+    :param flux_min_normal : minimum flux for the 'normal' star_finder to consider a star (optional)
     :return: return a list for the usable frames organized by telescope
     """
     frame_list = []
+    total_weight = []
     # Iterate between all frames and all telescopes
     for tele in range(len(img_list[0])):
         tele_list = []
+        weight_list = []
         for frame in range(len(img_list)):
             img = img_list[frame][tele]
             # Acquire background and standard deviation of the frame
@@ -339,55 +475,27 @@ def frame_quality(img_list, num):
             # Prepare frame for identification of stars
             img = prepare_stars(img, bg)
             # Acquire sources in the images
-            stars = find_stars(img, std, 'normal')
+            stars = find_stars(img, std, 'normal', exp_fwhm, flux_min_normal)
             # In case no stars are identified that fit our criteria
             if type(stars) == astropy.units.decorators.NoneType:
                 continue
             if len(stars) >= num:
                 tele_list.append(img)
-
         frame_list.append(tele_list)
 
     return frame_list
 
 
-# 
-def tele_quality(img_list, num):
-    """
-    Function that evaluates every stacked image for all 4 telescopes, creating a list containing every image that
-    detectes at least "num" stars. It also removes the background from the stacked images.
-
-    :param img_list: list of stacked images to be qualified
-    :param num: number of stars required for the image to be deemed usable
-    :return: return a list contaning the filtered stacked images
-    """
-    stitched_quality = []
-    # Iterate between all stacked images
-    for tele in img_list:
-        # Acquire background and standard deviation of the frame
-        bg, _, _, std = background_noise(tele)
-        # Prepare frame for identification of stars
-        img = prepare_stars(tele, bg)
-        # Acquire sources in the images
-        stars = find_stars(tele, std, 'normal')
-        # In case no stars are identified that fit our criteria
-        if type(stars) == astropy.units.decorators.NoneType:
-            continue
-        if len(stars) >= num:
-            stitched_quality.append(tele)
-
-    return stitched_quality
-
-
-# Function that evaluates the final stitched image, creating a list containing every stitched image that
-# detectes at least three stars with a flux bigger than 3. It also removes the background from the stitched images.
-def stitch_quality(stitched_img, num):
+def stitch_quality(stitched_img, num, exp_fwhm=7, flux_min_stitch=25, peak_min_stitch=45):
     """
     Function that evaluates every stacked image for all 4 telescopes, creating a list containing every image that
     detectes at least "num" stars. It also removes the background from the stacked images.
 
     :param stitched_img: master image
     :param num: number of stars required for the master image to be considered a success
+    :param exp_fwhm: expected fwhm for the stars (optional)
+    :param flux_min_stitch: minimum flux for the 'stitched' star_finder to consider a star (optional)
+    :param peak_min_stitch: minimum flux for the 'stitched' star_finder to consider a star (optional)
     :return: True -> if the master image is considered good
              False -> if the master image is considered not good
     """
@@ -396,7 +504,7 @@ def stitch_quality(stitched_img, num):
     # Prepare frame for identification of stars
     stitched_img = prepare_stars(stitched_img, bg)
     # Acquire sources in the images
-    stars = find_stars(stitched_img, std, 'stitched')
+    stars = find_stars(stitched_img, std, 'stitched', exp_fwhm, flux_min_stitch, peak_min_stitch)
     # In case no stars are identified that fit our criteria
     if type(stars) == astropy.units.decorators.NoneType:
         return False
@@ -433,18 +541,25 @@ def final_stitcher(img_list):
     :param img_list: list of images of the four telescopes
     :return: master image
     """
+    final_img = []
     # Define the telescope 1 as the reference for the stitching
     master_img = img_list[0]
     warped_list = [master_img]
-    # Iteratively stitch all the final telescope images together
+
+    # Acquire coordinates from the reference image
+    master_coords = stars_features(master_img)
+
+    # Iteratively finde the homography and warp all the telescope images
     for tele in range(1, len(img_list)):
 
-        master_coords = stars_coordinates(master_img, 3)
-
-        tele_coords = stars_coordinates(img_list[tele], 3)
+        tele_coords = stars_features(img_list[tele])
 
         # Match the stars between the two images
         matches, master_match, tele_match = stars_matcher(master_coords, tele_coords)
+
+        if matches == 0:
+            print("NOT ENOUGH MATCHES TO CALCULATE HOMOGRAPHY")
+            return final_img
 
         # Estimate the homography using the cv2 library
         H, _ = cv2.findHomography(tele_match, master_match)
@@ -463,16 +578,20 @@ def final_stitcher(img_list):
 '''''''                    PLT FUNCTIONS                                                                         '''''''
 
 
-def show_stars(img, title, ext, save):
+def show_stars(img, amp_max, title='Default Name', ext='', save=False):
     """
     Plot a single image of the stars
 
     :param img: image to be ploted
+    :param amp_max: maximum amplitude of the brightest star
     :param title: title of the plot and name of the file
     :param ext: extention for the file
-    :param save: True -> Save the image in "stitched" folder
-                 False -> Don't save the image
+    :param save: If 'True' save file to relative path: ./stars/stitched/
     """
+
+    # Setup Image Normalization for plot
+    norm = ImageNormalize(stretch=SqrtStretch(), vmax=amp_max)
+
     plt.imshow(img, norm=norm, origin='lower', cmap='inferno',
                interpolation='nearest')
     plt.title(title, fontweight='bold')
@@ -482,19 +601,22 @@ def show_stars(img, title, ext, save):
     plt.show()
 
 
-def show_apertures(img, src, title, save):
+def show_apertures(img, src, amp_max, title='Default Name', save=False):
     """
     Plot apertures for a single image of the stars
 
     :param img: image to be ploted
     :param src: sources of the image to be identified
+    :param amp_max: maximum amplitude of the brightest star
     :param title: title of the plot and name of the file
-    :param save: True -> Save the image in "stitched" folder
-                 False -> Don't save the image
+    :param save: If 'True' save file to relative path: ./stars/stitched/
     """
     # Apply circles in the positions of the sources
     positions = np.transpose((src['xcentroid'], src['ycentroid']))
     apertures = CircularAperture(positions, r=4.0)
+
+    # Setup Image Normalization for plot
+    norm = ImageNormalize(stretch=SqrtStretch(), vmax=amp_max)
 
     # Plot image
     plt.imshow(img, cmap='inferno', origin='lower', norm=norm,
@@ -507,27 +629,30 @@ def show_apertures(img, src, title, save):
     plt.show()
 
 
-def show_telescopes(img_list, name, save):
+def show_telescopes(img_list, amp_max, name='Default Name', save=False):
     """
     Plot all stacked images for the telescopes into a single image
 
     :param img_list: list of images of all four telescopes
-    :param name: name fo the file
-    :param save: True -> Save the image in "stitched" folder
-                 False -> Don't save the image
+    :param amp_max: maximum amplitude of the brightest star
+    :param name: name of the file
+    :param save: If 'True' save file to relative path: ./stars/stitched/
     """
+    # Setup Image Normalization for plot
+    norm = ImageNormalize(stretch=SqrtStretch(), vmax=amp_max)
+
     # Create a figure and subplots
     fig, axs = plt.subplots(nrows=2, ncols=2)
 
     # Plot each image in a subplot
     axs[0, 0].imshow(img_list[0], norm=norm, origin='lower', cmap='inferno',
-                interpolation='nearest')
+                     interpolation='nearest')
     axs[0, 1].imshow(img_list[1], norm=norm, origin='lower', cmap='inferno',
-                interpolation='nearest')
+                     interpolation='nearest')
     axs[1, 0].imshow(img_list[2], norm=norm, origin='lower', cmap='inferno',
-                interpolation='nearest')
+                     interpolation='nearest')
     axs[1, 1].imshow(img_list[3], norm=norm, origin='lower', cmap='inferno',
-                interpolation='nearest')
+                     interpolation='nearest')
 
     # Idetify telescope in subplot
     axs[0, 0].set_title('Telescope #1')
@@ -541,37 +666,58 @@ def show_telescopes(img_list, name, save):
     plt.show()
 
 
-def print_centroid(positions, names, title, name, ext, xlabel, ylabel, save):
+def print_centroid(positions, stdev_est, names, title='Default Name', name='Default Name',
+                   xlabel='file', ylabel='value', save=False):
     """
+    Function to plot the centroid of the star with the standard deviation
 
     :param positions: list of one axis of the coordinates for the centroid
+    :param stdev_est: standard deviation of the position of the star
     :param names: list of names for the files
     :param title: title of the ploted image
     :param name: name for the saved file
-    :param ext: extention for the saved file
     :param xlabel: label for the x axis
     :param ylabel: label for the y axis
-    :param save: True -> Save the image in "stitched" folder
-                 False -> Don't save the image
+    :param save: If 'True' save file to relative path: ./stars/graphs/
     """
-    # Calculate the MAD
-    median = np.median(positions)
-    mad = np.median(np.abs(positions - median))
-    # Aprox ratio between mad and standard deviation for a normal distribution
-    stdev_est = 1.4826 * mad
     # Plot image
     plt.figure()
     plt.title(title)
     plt.errorbar(np.arange(len(names)), positions, yerr=stdev_est, fmt='.', ecolor='g',
                  capsize=5)
-    plt.axhline(median, color='r', linestyle='--')
     plt.xticks(np.arange(len(names)), names, rotation=90)
     plt.ylabel(ylabel)
     plt.xlabel(xlabel)
     plt.grid()
     plt.tight_layout()
     if save is True:
-        plt.savefig('./stars/graphs/{}_{}.png'.format(name, ext))
+        plt.savefig('./stars/graphs/{}.png'.format(name))
+
+    plt.show()
+
+
+def print_fwhm(positions, names, save=False):
+    """
+    Function to plot the centroid of the star with the standard deviation
+
+    :param positions: list of one axis of the coordinates for the centroid
+    :param names: list of names for the files
+    :param save: If 'True' save file to relative path: ./stars/graphs/
+    """
+    median = np.median(positions)
+    # Plot image
+    plt.figure()
+    plt.title('FWHM per file')
+    plt.errorbar(np.arange(len(names)), positions, fmt='.', ecolor='g', capsize=5)
+    # Plot median line
+    plt.axhline(median, color='r', linestyle='--')
+    plt.xticks(np.arange(len(names)), names, rotation=90)
+    plt.ylabel('FWHM')
+    plt.xlabel('files')
+    plt.grid()
+    plt.tight_layout()
+    if save is True:
+        plt.savefig('./stars/graphs/{}.png'.format('fwhm_files'))
 
     plt.show()
 
