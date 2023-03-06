@@ -10,8 +10,8 @@ from photutils.datasets import load_star_image
 hdu = load_star_image()
 data = hdu.data[0:401, 0:401]
 
-stars_file = fits.open('C:/Users/Sengo/Desktop/Dissertação/stars/images/GRAVI.2021-06-25T04_17_48.414_pt.fits')
-bg_file = fits.open('C:/Users/Sengo/Desktop/Dissertação/stars/outros/ACQ_dark07_20171229_DIT_mean.fits')
+stars_file = fits.open('./stars/images/GRAVI.2020-03-06T08_39_25.223_pt.fits')
+bg_file = fits.open('./stars/outros/ACQ_dark07_20171229_DIT_mean.fits')
 
 
 images = stars_file[0].data
@@ -23,8 +23,9 @@ mean, median, std = sigma_clipped_stats(img, sigma=3.0)
 print((mean, median, std))
 
 norm = ImageNormalize(stretch=SqrtStretch())
-plt.imshow(img, norm=norm, origin='lower', cmap ='Spectral',
+plt.imshow(img, origin='lower', cmap ='inferno',
            interpolation='nearest')
+plt.colorbar()
 plt.title("Without BG extraction", fontweight ='bold')
 plt.show()
 
@@ -40,8 +41,9 @@ bkg = Background2D(img, (50, 50), filter_size=(3, 3), sigma_clip=sigma_clip, bkg
 mean, median, std = sigma_clipped_stats(img - bkg.background, sigma=3.0)
 print((mean, median, std))
 
-plt.imshow(img - bkg.background, norm=norm, origin='lower', cmap ='magma',
+plt.imshow(bkg.background, origin='lower', cmap ='inferno',
            interpolation='nearest')
+plt.colorbar()
 plt.title("BiweightLocationBackground", fontweight ='bold')
 plt.show()
 
@@ -56,8 +58,9 @@ bkg = Background2D(img, (50, 50), filter_size=(3, 3), sigma_clip=sigma_clip, bkg
 mean, median, std = sigma_clipped_stats(img - bkg.background, sigma=3.0)
 print((mean, median, std))
 
-plt.imshow(img - bkg.background, norm=norm, origin='lower', cmap ='viridis',
+plt.imshow(bkg.background, origin='lower', cmap ='inferno',
            interpolation='nearest')
+plt.colorbar()
 plt.title("SExtractorBackground", fontweight ='bold')
 plt.show()
 
@@ -72,8 +75,9 @@ bkg = Background2D(img, (50, 50), filter_size=(3, 3), sigma_clip=sigma_clip, bkg
 mean, median, std = sigma_clipped_stats(img - bkg.background, sigma=3.0)
 print((mean, median, std))
 
-plt.imshow(img - bkg.background, norm=norm, origin='lower', cmap ='viridis',
+plt.imshow(bkg.background, origin='lower', cmap ='inferno',
            interpolation='nearest')
+plt.colorbar()
 plt.title("MMMBackground", fontweight ='bold')
 plt.show()
 
@@ -88,8 +92,9 @@ bkg = Background2D(img, (50, 50), filter_size=(3, 3), sigma_clip=sigma_clip, bkg
 mean, median, std = sigma_clipped_stats(img - bkg.background, sigma=3.0)
 print((mean, median, std))
 
-plt.imshow(img - bkg.background, norm=norm, origin='lower', cmap ='plasma',
+plt.imshow(bkg.background, origin='lower', cmap ='inferno',
            interpolation='nearest')
+plt.colorbar()
 plt.title("ModeEstimatorBackground", fontweight ='bold')
 plt.show()
 
@@ -104,8 +109,9 @@ bkg = Background2D(img, (50, 50), filter_size=(3, 3), sigma_clip=sigma_clip, bkg
 mean, median, std = sigma_clipped_stats(img - bkg.background, sigma=3.0)
 print((mean, median, std))
 
-plt.imshow(img - bkg.background, norm=norm, origin='lower', cmap ='cividis',
+plt.imshow(bkg.background, origin='lower', cmap ='inferno',
            interpolation='nearest')
+plt.colorbar()
 plt.title("MeanBackground", fontweight ='bold')
 plt.show()
 
@@ -120,8 +126,9 @@ bkg = Background2D(img, (50, 50), filter_size=(3, 3), sigma_clip=sigma_clip, bkg
 mean, median, std = sigma_clipped_stats(img - bkg.background, sigma=3.0)
 print((mean, median, std))
 
-plt.imshow(img - bkg.background, norm=norm, origin='lower', cmap ='inferno',
+plt.imshow(bkg.background, origin='lower', cmap ='inferno',
            interpolation='nearest')
+plt.colorbar()
 plt.title("MedianBackground", fontweight ='bold')
 plt.show()
 
@@ -138,7 +145,7 @@ print("Actual Background")
 mean, median, std = sigma_clipped_stats(img - bg, sigma=3.0)
 print((mean, median, std))
 
-plt.imshow(img - bg, norm=norm, origin='lower', cmap='inferno',
+plt.imshow(img - bg, origin='lower', cmap='inferno',
            interpolation='nearest')
 plt.title("Actual Background", fontweight ='bold')
 plt.show()
@@ -149,8 +156,7 @@ print("Without BG extraction w/ sintetic data")
 mean, median, std = sigma_clipped_stats(data, sigma=3.0)
 print((mean, median, std))
 
-norm = ImageNormalize(stretch=SqrtStretch())
-plt.imshow(data, norm=norm, origin='lower', cmap ='magma',
+plt.imshow(data, origin='lower', cmap ='inferno',
            interpolation='nearest')
 plt.title("Without BG extraction", fontweight ='bold')
 plt.show()
@@ -164,10 +170,10 @@ print("BiweightLocationBackground w/ sintetic data")
 sigma_clip = SigmaClip(sigma=3.0)
 bkg_estimator = BiweightLocationBackground()
 bkg = Background2D(data, (50, 50), filter_size=(3, 3), sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
-mean, median, std = sigma_clipped_stats(data - bkg.background, sigma=3.0)
+mean, median, std = sigma_clipped_stats(bkg.background, sigma=3.0)
 print((mean, median, std))
 
-plt.imshow(data - bkg.background, norm=norm, origin='lower', cmap ='magma',
+plt.imshow(bkg.background, origin='lower', cmap ='inferno',
            interpolation='nearest')
 plt.title("BiweightLocationBackground", fontweight ='bold')
 plt.show()
@@ -180,10 +186,10 @@ print("SExtractorBackground w/ sintetic data")
 
 bkg_estimator = SExtractorBackground()
 bkg = Background2D(data, (50, 50), filter_size=(3, 3), sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
-mean, median, std = sigma_clipped_stats(data - bkg.background, sigma=3.0)
+mean, median, std = sigma_clipped_stats(bkg.background, sigma=3.0)
 print((mean, median, std))
 
-plt.imshow(data - bkg.background, norm=norm, origin='lower', cmap ='cividis',
+plt.imshow(bkg.background, origin='lower', cmap ='inferno',
            interpolation='nearest')
 plt.title("SExtractorBackground", fontweight ='bold')
 plt.show()
@@ -196,10 +202,10 @@ print("MMMBackground w/ sintetic data")
 
 bkg_estimator = MMMBackground()
 bkg = Background2D(data, (50, 50), filter_size=(3, 3), sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
-mean, median, std = sigma_clipped_stats(data - bkg.background, sigma=3.0)
+mean, median, std = sigma_clipped_stats(bkg.background, sigma=3.0)
 print((mean, median, std))
 
-plt.imshow(data - bkg.background, norm=norm, origin='lower', cmap ='cividis',
+plt.imshow(bkg.background, origin='lower', cmap ='inferno',
            interpolation='nearest')
 plt.title("MMMBackground", fontweight ='bold')
 plt.show()
@@ -212,10 +218,10 @@ print("ModeEstimatorBackground w/ sintetic data")
 
 bkg_estimator = ModeEstimatorBackground()
 bkg = Background2D(data, (50, 50), filter_size=(3, 3), sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
-mean, median, std = sigma_clipped_stats(data - bkg.background, sigma=3.0)
+mean, median, std = sigma_clipped_stats(bkg.background, sigma=3.0)
 print((mean, median, std))
 
-plt.imshow(data - bkg.background, norm=norm, origin='lower', cmap ='Greys_r',
+plt.imshow(bkg.background, origin='lower', cmap ='inferno',
            interpolation='nearest')
 plt.title("ModeEstimatorBackground", fontweight ='bold')
 plt.show()
@@ -228,10 +234,10 @@ print("MeanBackground w/ sintetic data")
 
 bkg_estimator = MeanBackground()
 bkg = Background2D(data, (50, 50), filter_size=(3, 3), sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
-mean, median, std = sigma_clipped_stats(data - bkg.background, sigma=3.0)
+mean, median, std = sigma_clipped_stats(bkg.background, sigma=3.0)
 print((mean, median, std))
 
-plt.imshow(data - bkg.background, norm=norm, origin='lower', cmap ='Greys_r',
+plt.imshow(bkg.background, origin='lower', cmap ='inferno',
            interpolation='nearest')
 plt.title("MeanBackground", fontweight ='bold')
 plt.show()
@@ -244,10 +250,10 @@ print("MedianBackground w/ sintetic data")
 
 bkg_estimator = MedianBackground()
 bkg = Background2D(data, (50, 50), filter_size=(3, 3), sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
-mean, median, std = sigma_clipped_stats(data - bkg.background, sigma=3.0)
+mean, median, std = sigma_clipped_stats(bkg.background, sigma=3.0)
 print((mean, median, std))
 
-plt.imshow(data - bkg.background, norm=norm, origin='lower', cmap ='Greys_r',
+plt.imshow(bkg.background, origin='lower', cmap ='inferno',
            interpolation='nearest')
 plt.title("MedianBackground", fontweight ='bold')
 plt.show()

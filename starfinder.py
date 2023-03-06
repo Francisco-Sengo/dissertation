@@ -262,7 +262,6 @@ def star_stats(img_o, src, std, name='Default Name', exp_fwhm=9, plt_gauss=True,
     masked = mask_roi(star_pixels)
     # Acquire max value of the star
     amp_max = np.max(masked)
-
     # Estimate initial parameters for 2D Gaussian fit
     amp = amp_max - np.min(star_pixels)
     # Centroid of the box containing the star

@@ -55,15 +55,15 @@ plt_fwhm = True
 # Setup for save plots
 # True -> Yes | False -> No
 # For aperture of master image
-save_aprt = True
+save_aprt = False
 # For simple of master image
-save_img = True
+save_img = False
 # For all stacked telescopes
-save_tele = True
+save_tele = False
 # For the centroids of the brightest stars of all files
-save_centroids = True
+save_centroids = False
 # For the isolated brightest star and the fitted gaussian
-save_gauss = True
+save_gauss = False
 # For the fwhm of the brightest stars of all files
 save_fwhm = True
 
