@@ -145,7 +145,7 @@ print("Actual Background")
 mean, median, std = sigma_clipped_stats(img - bg, sigma=3.0)
 print((mean, median, std))
 
-plt.imshow(img - bg, origin='lower', cmap='inferno',
+plt.imshow(bg, origin='lower', cmap='inferno',
            interpolation='nearest')
 plt.title("Actual Background", fontweight ='bold')
 plt.show()

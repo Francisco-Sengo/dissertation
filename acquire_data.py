@@ -8,3 +8,5 @@ fits_files = Path(fits_files)
 fits_files = glob.glob(str(fits_files))
 
 sf.div_files(fits_files)
+
+

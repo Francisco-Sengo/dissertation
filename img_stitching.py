@@ -6,7 +6,6 @@ import starfinder as sf
 import os
 import warnings
 import cv2
-import numpy as np
 
 '''''''''
 Example of usage for the starfinder.py library and image stitching alghorithm for images acquired by GRAVITY.
@@ -58,15 +57,15 @@ plt_fwhm = False
 # Setup for save plots
 # True -> Yes | False -> No
 # For aperture of master image
-save_aprt = False
+save_aprt = True
 # For simple of master image
-save_img = False
+save_img = True
 # For all stacked telescopes
-save_tele = False
+save_tele = True
 # For the centroids of the brightest stars of all files
 save_centroids = False
 # For the isolated brightest star and the fitted gaussian
-save_gauss = False
+save_gauss = True
 # For the fwhm of the brightest stars of all files
 save_fwhm = False
 
@@ -91,82 +90,71 @@ fwhm_list = []
 file_counter = 0
 '''''''-------------------STITCHING ALGORITHM--------------------------------------------------------------------'''''''
 # Loop to access all files in fits folder
-for fits_file in stars_files:
 
-    images, name, time, wcs = sf.open_file(fits_file)
+images, name, time, w = sf.open_file('./stars/images/GRAVI.2020-03-07T07_46_09.234_pt.fits')
 
-    print(name, "(", file_counter + 1, "/", len(stars_files), ")")
-    # Increase file counter
+'''''''                 TELESCOPE STACKING                                                                   '''''''
+# Check quality of all frames of all telescopes
+frame_quality = sf.frame_quality(images, num_stars, exp_fwhm=6, flux_minl=0)
 
-    file_counter = file_counter + 1
+# Stack all the images deemed usable by the frame_quality() function
+tele_list = sf.tele_stitcher(frame_quality)
 
-    # if file_counter != 15:
-    #     continue
+tele_bg, _, _, tele_std = sf.background_noise(tele_list[0])
+tele_stars = sf.find_stars(tele_list[0], tele_std, exp_fwhm=6, flux_min=0)
+brightest_tele = sf.main_stars(tele_stars, 1)
+# print(len(tele_stars))
+# Acquire maximum amplite of telescope one for the plot
+_, _, _, _, amp_max_tele = sf.star_stats(tele_list[0], brightest_tele[0], tele_std, plt_gauss=False)
 
-    '''''''                 TELESCOPE STACKING                                                                   '''''''
-    # Check quality of all frames of all telescopes
-    # frame_quality = sf.frame_quality(images, num_stars, exp_fwhm=5, flux_min_normal=0)
-    #
-    # # Stack all the images deemed usable by the frame_quality() function
-    # tele_list = sf.tele_stitcher(frame_quality)
+# Plot stacked images
+if plt_tele is True:
+    sf.show_telescopes(tele_list, amp_max_tele, name, save_tele)
 
-    tele_list = sf.tele_stacker(images, wcs, time)
+'''''''                 IMAGE STITCHING                                                                      '''''''
 
-    tele_bg, _, _, tele_std = sf.background_noise(tele_list[0])
-    tele_stars = sf.find_stars(tele_list[0], tele_std, exp_fwhm=6, flux_min=0)
-    brightest_tele = sf.main_stars(tele_stars, 1)
-
-    # Acquire maximum amplite of telescope one for the plot
-    _, _, _, _, amp_max_tele = sf.star_stats(tele_list[0], brightest_tele[0], tele_std, exp_fwhm=7, plt_gauss=True)
-
-    # Plot stacked images
-    if plt_tele is True:
-        sf.show_telescopes(tele_list, amp_max_tele, name, save_tele)
-
-    continue
-
-    '''''''                 IMAGE STITCHING                                                                      '''''''
-
-    # Check if there are any usefull images from the previous step
-    # if len(tele_list) == 4:
-    final_img = sf.final_stitcher(tele_list, flux_min_normal=0, exp_fwhm=6, distance=6)
+# Check if there are any usefull images from the previous step
+if len(tele_list) == 4:
+    final_img = sf.final_stitcher(tele_list, distance=6, exp_fwhm=6, flux_min=0)
 
     if len(final_img) == 0:
         print("UNFIT FILE FOR IMAGE STITCHING")
-        continue
 
-    master_bg, _, _, std = sf.background_noise(final_img)
-    master_stars = sf.find_stars(final_img, std, flux_min=20, exp_fwhm=6)
+    else:
+    # Check the quality of the master image
+        if sf.stitch_quality(final_img, 0) is True:
+            master_bg, _, _, std = sf.background_noise(final_img)
+            master_stars = sf.find_stars(final_img, std, exp_fwhm=6, flux_min=0)
+            print(len(master_stars))
+            # Append both the master image and the name of the file to a list
+            # master_list.append(final_img)
+            # name_list.append(name[14:22])
 
-    # Print the sources of the master image
-    sf.print_sources(master_stars)
+            # Append centroid positions of brighetest star to lists
+            brightest = sf.main_stars(master_stars, 1)
 
-    # Append both the master image and the name of the file to a list
-    master_list.append(final_img)
-    name_list.append(name[14:22])
+            # Calculate the FWHM, standard deviation of the position of the centroid and maximum amplitude
+            # of the brightest star
+            fwhm, x_std, y_std, star_max, amp_max = sf.star_stats(final_img, brightest[0], std, name,
+                                                                  plt_gauss=plt_gauss, save=save_gauss)
 
-    # Append centroid positions of brighetest star to lists
-    brightest = sf.main_stars(master_stars, 1)
-    print(brightest)
-    # Calculate the FWHM, standard deviation of the position of the centroid and maximum amplitude
-    # of the brightest star
-    fwhm, x_std, y_std, star_max, amp_max = sf.star_stats(final_img, brightest[0], name, exp_fwhm=9,
-                                                          plt_gauss=plt_gauss, save=save_gauss)
+            # Append stats to corresponding lists for plots
+            # x_std_list.append(x_std)
+            # y_std_list.append(y_std)
+            # fwhm_list.append(fwhm)
+            # pos_x.append(brightest[0][1])
+            # pos_y.append(brightest[0][2])
 
-    # Append stats to corresponding lists for plots
-    # x_std_list.append(x_std)
-    # y_std_list.append(y_std)
-    # fwhm_list.append(fwhm)
-    # pos_x.append(brightest[0][1])
-    # pos_y.append(brightest[0][2])
+            # Plot apertures in the master image
+            if plt_aprt is True:
+                sf.show_apertures(final_img, master_stars, amp_max, name, save_aprt)
 
-    # Plot apertures in the master image
-    if plt_aprt is True:
-        sf.show_apertures(final_img, master_stars, amp_max, name, save_aprt)
+            # Plot the master image
+            if plt_img is True:
+                sf.show_stars(final_img, amp_max, name, 'master', save_img)
 
-    # Plot the master image
-    if plt_img is True:
-        sf.show_stars(final_img, amp_max, name, 'master', save_img)
+            # Print the sources of the master image
+            sf.print_sources(master_stars)
 
     print("_______________________________________________________________________________________________________")
 
@@ -183,4 +171,3 @@ for fits_file in stars_files:
 #     sf.print_fwhm(fwhm_list, name_list, save_fwhm)
 
 print("FINISH")
-
