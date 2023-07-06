@@ -24,6 +24,12 @@ import random
 from drizzle import drizzle
 from astropy.wcs import WCS
 from photutils.centroids import centroid_com
+import copy
+from ccdproc import Combiner
+from ccdproc import wcs_project
+from astropy.nddata import CCDData
+import astroalign as aa
+import pandas as pd
 
 #TODO Divide library into packages
 
@@ -43,8 +49,8 @@ bkg_estimator = SExtractorBackground()
 sigma_clip = SigmaClip(sigma=3.0)
 
 # Setup for find_stars()
-mask_min = 25
-mask_max = 225
+mask_min = 10
+mask_max = 240
 
 
 # Setup for mask
@@ -165,7 +171,7 @@ def prepare_stars(img, noise):
     return img
 
 
-def normalize_img(original):
+def normalize_img(original, max=0):
     """
     Function to normalize the image to apply the median blur
 
@@ -178,6 +184,8 @@ def normalize_img(original):
     # Maximum and Minimum values for the image
     min_val = np.min(img)
     max_val = np.max(img)
+    if max != 0:
+        max_val = max
 
     # Normalize image
     img_normalized = (img - min_val) / (max_val - min_val)
@@ -199,6 +207,7 @@ def mask_roi(roi):
 
     # Normalize image to apply Median Blur
     norm_roi = normalize_img(img)
+    #EI =7 TODO kernel = 5
     blured = cv2.medianBlur(norm_roi, 5)
 
     # Create threshold and max value to filter from blured image
@@ -209,6 +218,8 @@ def mask_roi(roi):
     # Apply Opening method to create mask
     opening = cv2.erode(binary, kernel_erode, iterations=1)
     opened = cv2.dilate(opening, kernel_dilate, iterations=1)
+
+    # print(opened)
 
     # Apply mask to region of interest
     h = img.shape[0]
@@ -224,7 +235,7 @@ def mask_roi(roi):
 '''''''                    STAR IDENTIFICATION                                                                   '''''''
 
 
-def find_stars(img, std, exp_fwhm=7.0, flux_min=5, peak_min=45, roi=[]):
+def find_stars(img, std, th=3, exp_fwhm=7.0, flux_min=5, peak_min=45, roi=[]):
     """
         Function used to identificate and qualify stars in an image 
 
@@ -236,7 +247,7 @@ def find_stars(img, std, exp_fwhm=7.0, flux_min=5, peak_min=45, roi=[]):
         :return: list containing all the stars that meet the criteria 
     """
     # Setup for Star Finder
-    daofind = DAOStarFinder(fwhm=exp_fwhm, threshold=3. * std)
+    daofind = DAOStarFinder(fwhm=exp_fwhm, threshold=th * std)
 
     # Create mask for region of interest
     mask = np.zeros(img.shape, dtype=bool)
@@ -270,7 +281,7 @@ def fit_star(img_o, src, std=0, mask=True, iso_box=9):
         masked = star_pixels
 
     # Estimate initial parameters for 2D Gaussian fit
-    amp = np.max(masked) - np.min(star_pixels)
+    amp = np.max(masked)
     # Centroid of the box containing the star
     x_mean, y_mean = iso_box, iso_box
     # Initial guess for standard deviation
@@ -361,7 +372,7 @@ def star_stats(img_o, src, std=0, name='Default Name', iso_box=9, plt_gauss=True
     return sigma, star_max, amp_max, centroid, sigma_err, star_max_err
 
 
-def file_statistics(img_list, iso_box=9, exp_fwhm=7, flux_min=5, outlier=3, mask=True, roi=[]):
+def file_statistics(img_list, iso_box=9, th=3, exp_fwhm=7, flux_min=5, outlier=3, mask=True, roi=[]):
     """
     Function that evaluates every frame in a file, creating a list containing every frame that detectes at least "num"
     of stars. It also removes the background from the frames.
@@ -395,7 +406,7 @@ def file_statistics(img_list, iso_box=9, exp_fwhm=7, flux_min=5, outlier=3, mask
 
             # Acquire sources in the images
 
-            stars = find_stars(img, std, exp_fwhm, flux_min, roi=roi)
+            stars = find_stars(img, std, th, exp_fwhm, flux_min, roi=roi)
 
             if stars is None:
                 tele_sigma.append(np.nan)
@@ -449,22 +460,22 @@ def file_statistics(img_list, iso_box=9, exp_fwhm=7, flux_min=5, outlier=3, mask
     return pos_x_list, pos_y_list, sigma_list, amp_list, sigma_err_list, amp_err_list
 
 
-def stat_filter(tele_stats, outlier, exp_fwhm):
+def centroid_filter(tele_stats, outlier):
+    nans = []
     mean_x = np.nanmedian(tele_stats[0])
     mean_y = np.nanmedian(tele_stats[1])
     for i in range(len(tele_stats[0])):
-        if abs(tele_stats[0][i] - mean_x) > outlier or abs(tele_stats[1][i] - mean_y) > outlier or tele_stats[3][i] > exp_fwhm:
-            tele_stats[0][i] = np.nan
-            tele_stats[1][i] = np.nan
-            tele_stats[2][i] = np.nan
-            tele_stats[3][i] = np.nan
-            tele_stats[4][i] = np.nan
-            tele_stats[5][i] = np.nan
-
-    return tele_stats[0], tele_stats[1], tele_stats[2], tele_stats[3], tele_stats[4], tele_stats[5]
+        if abs(tele_stats[0][i] - mean_x) > outlier or abs(tele_stats[1][i] - mean_y) > outlier:
+            for stat in tele_stats[i]:
+                stat = np.nan
+                nans.append(i)
+    return tele_stats, nans
 
 
-def star_distance(img_o, srcs, std=0, mask=True, iso_box=9):
+import mpmath as mp
+
+
+def star_distance(img_o, srcs, std=0, mask=True, iso_box=9, error=0):
     centroid_list = []
     stddev_list = []
     for src in srcs:
@@ -477,22 +488,31 @@ def star_distance(img_o, srcs, std=0, mask=True, iso_box=9):
 
         cov_matrix = fit_p.fit_info['param_cov']
 
-        # Evaluate the fit
-        residuals = masked - gauss2d_fit(x, y)
-        mse = np.mean(residuals ** 2)
-        rmse = np.sqrt(mse)
-        ss_res = np.sum(residuals ** 2)
-        ss_tot = np.sum((masked - np.mean(masked)) ** 2)
-        r_squared = 1 - (ss_res / ss_tot)
 
-        # Check if fit is good or bad
-        if (r_squared < 0.7 and rmse > 0.5) or cov_matrix is None:
-            # stddev_list.append([np.nan, np.nan])
-            return np.nan, np.nan
+        #TODO CHECK THIS
+        # Evaluate the fit
+        # ALTERAR COMO ESTA PARA OS STATS
+
+        # residuals = masked - gauss2d_fit(x, y)
+        # mse = np.mean(residuals ** 2)
+        # rmse = np.sqrt(mse)
+        # ss_res = np.sum(residuals ** 2)
+        # ss_tot = np.sum((masked - np.mean(masked)) ** 2)
+        # r_squared = 1 - (ss_res / ss_tot)
+        #
+        # # Check if fit is good or bad
+        # if (r_squared < 0.7 and rmse > 0.5) or cov_matrix is None:
+        #     # stddev_list.append([np.nan, np.nan])
+        #     return np.nan, np.nan, np.nan, np.nan
 
         stddev_list.append([cov_matrix[1, 1], cov_matrix[2, 2]])
 
     distance = sqrt((centroid_list[0][0] - centroid_list[1][0]) ** 2 + (centroid_list[0][1] - centroid_list[1][1]) ** 2)
+
+    angle = mp.atan((centroid_list[0][1] - centroid_list[1][1]) / (centroid_list[0][0] - centroid_list[1][0]))
+
+    if error != 0:
+        return distance, float(str(mp.degrees(angle)))
 
     if stddev_list[0][0] != np.nan and stddev_list[1][0] != np.nan and \
        stddev_list[0][1] != np.nan and stddev_list[1][1] != np.nan:
@@ -518,10 +538,22 @@ def star_distance(img_o, srcs, std=0, mask=True, iso_box=9):
                                  ((centroid_list[1][1] - centroid_list[0][1]) ** 2 + (centroid_list[1][0]
                                                                                       - centroid_list[0][1]) ** 2))
 
+        delta_angle = 2 * mp.atan((centroid_list[0][1] - centroid_list[1][1]) /
+                                  (centroid_list[0][0] - centroid_list[1][0])) * \
+                      (centroid_list[0][1] - centroid_list[1][1]) / \
+                      ((centroid_list[0][0] - centroid_list[1][0]) ** 2 +
+                       (centroid_list[0][1] - centroid_list[1][1]) ** 2) * (stddev_list[0][0] + stddev_list[1][0]) + \
+                      2 * mp.atan((centroid_list[0][1] - centroid_list[1][1]) /
+                                  (centroid_list[0][0] - centroid_list[1][0])) * \
+                      (centroid_list[0][0] - centroid_list[1][0]) / \
+                      ((centroid_list[0][0] - centroid_list[1][0]) ** 2 +
+                       (centroid_list[0][1] - centroid_list[1][1]) ** 2) * (stddev_list[0][1] + stddev_list[1][1])
+
     else:
         delta_distance = np.nan
+        delta_angle = np.nan
 
-    return distance, delta_distance
+    return distance, float(str(mp.degrees(angle))), delta_distance, float(str(mp.degrees(abs(delta_angle))))
 
 
 # def distance_filter(tele_dist, outlier):
@@ -534,31 +566,35 @@ def star_distance(img_o, srcs, std=0, mask=True, iso_box=9):
 #     return tele_dist[0], tele_dist[1]
 
 # TODO alterar a cena do roi aqui
-def file_distances(img_list, mask=True, iso_box=9, exp_fwhm=7, flux_min=5, outlier=10, filter=False, roi_list=[]):
+def file_distances(img_list, mask=True, iso_box=9, th=3, exp_fwhm=7, flux_min=5, outlier=10, filter=False, roi_list=[]):
 
     file_distance = []
     dist_err = []
+    file_angle = []
+    ang_err = []
     for tele in range(len(img_list[0])):
 
         tele_distance = []
-        tele_std = []
+        tele_dstd = []
+        tele_angle = []
+        tele_astd = []
 
         for frame in range(len(img_list)):
             img = img_list[frame][tele]
 
-            _, mean, _, std = background_noise(img)
+            _, _, _, std = background_noise(img)
 
             flag = False
             star_list = []
             if len(roi_list) != 2:
-                stars = find_stars(img - mean, std, exp_fwhm, flux_min)
+                stars = find_stars(img, std, th, exp_fwhm, flux_min)
                 star_list = main_stars(stars, 2)
 
             else:
                 for cnt in range(2):
 
                     # Acquire sources in the images
-                    stars = find_stars(img-mean, std, exp_fwhm, flux_min, roi=roi_list[cnt])
+                    stars = find_stars(img, std, th, exp_fwhm, flux_min, roi=roi_list[cnt])
 
                     if stars is None:
                         flag = True
@@ -568,27 +604,37 @@ def file_distances(img_list, mask=True, iso_box=9, exp_fwhm=7, flux_min=5, outli
 
             if len(star_list) < 2 or flag:
                 tele_distance.append(np.nan)
-                tele_std.append(np.nan)
+                tele_dstd.append(np.nan)
+                tele_angle.append(np.nan)
+                tele_astd.append(np.nan)
                 continue
 
-            distance, d_std = star_distance(img, star_list, std=std, mask=mask, iso_box=iso_box)
+            distance, angle, d_std, a_std = star_distance(img, star_list, std=std, mask=mask, iso_box=iso_box)
 
             tele_distance.append(distance)
-            tele_std.append(d_std)
+            tele_dstd.append(d_std)
+            tele_angle.append(angle)
+            tele_astd.append(mp.degrees(a_std))
 
         # if filter:
         #     tele_distance, tele_std = distance_filter([tele_distance, tele_std], outlier)
 
         mean_d = np.nanmean(tele_distance)
+        mean_a = np.nanmean(tele_angle)
         for i in range(len(tele_distance)):
-            if abs(tele_distance[i] - mean_d) > outlier or tele_std[i] > outlier:
+            if abs(tele_distance[i] - mean_d) > outlier or tele_dstd[i] > outlier or \
+                    abs(tele_angle[i] - mean_a) > outlier or tele_astd[i] > outlier:
                 tele_distance[i] = np.nan
-                tele_std[i] = np.nan
+                tele_dstd[i] = np.nan
+                tele_angle[i] = np.nan
+                tele_astd[i] = np.nan
 
         file_distance.append(tele_distance)
-        dist_err.append(tele_std)
+        dist_err.append(tele_dstd)
+        file_angle.append(tele_angle)
+        ang_err.append(tele_astd)
 
-    return file_distance, dist_err
+    return file_distance, file_angle, dist_err, ang_err
 
 
 def main_stars(src, num=1):
@@ -628,7 +674,12 @@ def get_features(b_src):
     return stars_coords
 
 
-def stars_features(img, exp_fwhm=7, flux_min=5, roi=[]):
+def order_stars(srcs):
+    flux_sorted_indices = np.argsort(srcs['flux'])[::-1]
+    sorted_sources = srcs[flux_sorted_indices]
+    return sorted_sources
+
+def stars_features(img, th=3, exp_fwhm=7, flux_min=5, peak_min=45, roi=[]):
     """
     Function that identifies the stars and acquires their coordinates for later matching
 
@@ -638,19 +689,57 @@ def stars_features(img, exp_fwhm=7, flux_min=5, roi=[]):
     :return: list containing the coordinates of the identified stars
     """
     # Acquire standard deviation
-    _, mean, _, std = background_noise(img)
+    _, _, _, std = background_noise(img)
     # Find sources in the image
-    img_src = find_stars(img-mean, std, exp_fwhm, flux_min, roi=roi)
+    img_src = find_stars(img, std, th, exp_fwhm, flux_min, peak_min, roi=roi)
+    sorted_sources = order_stars(img_src)
 
     # Filter to only obtain the three brightest stars
     # Acquire the coordinates of said stars for easier manipulation
     # Append x and y coordinate respectively onto a list
-    stars_ft = get_features(img_src)
+    stars_ft = get_features(sorted_sources)
 
     return stars_ft
 
 
-def stars_matcher(src_coords, dst_coords, distance=5):
+def stars_matcher(src_coords, dst_coords, distance=5, max_features=10):
+    """
+    Function that matches the three brightest of two telescopes through the coordinates
+
+    :param src_coords: coordinates of the source image
+    :param dst_coords: coordinates of the destination image
+    :param distance: distance between stars to be considered the same
+    :return: a list contaning all the matches grouped, a list contaning only the matched coordinates of the source image
+    and a list contaning only the matched coordinates of the destination image
+    """
+    matches_list = []
+    match_1 = []
+    match_2 = []
+    max_ft = 0
+    # Match the coordinates of the same star between the two images
+    for c1 in range(len(src_coords)):
+        for c2 in range(len(dst_coords)):
+            if src_coords[c1][0] != np.nan and dst_coords[c2][0] != np.nan:
+                # Calculate distance between two stars in different images
+                d = sqrt((src_coords[c1][0] - dst_coords[c2][0]) ** 2 + (src_coords[c1][1] - dst_coords[c2][1]) ** 2)
+                # If the distance is lower than 10 px, the two stars match
+                if d < distance:
+                    match = [[src_coords[c1][0], src_coords[c1][1]], [dst_coords[c2][0], dst_coords[c2][1]]]
+                    matches_list.append(match)
+                    match_1.append([src_coords[c1][0], src_coords[c1][1]])
+                    match_2.append([dst_coords[c2][0], dst_coords[c2][1]])
+                    src_coords[c1][0] = np.nan
+                    dst_coords[c2][0] = np.nan
+                    max_ft = max_ft + 1
+                    if max_ft == max_features:
+                        return matches_list, np.array(match_1), np.array(match_2)
+
+    if len(matches_list) < 4:
+        return 0, 0, 0
+
+    return matches_list, np.array(match_1), np.array(match_2)
+
+def stars_matcher_1(src_coords, dst_coords, distance=5):
     """
     Function that matches the three brightest of two telescopes through the coordinates
 
@@ -666,19 +755,22 @@ def stars_matcher(src_coords, dst_coords, distance=5):
     # Match the coordinates of the same star between the two images
     for c1 in range(len(src_coords)):
         for c2 in range(len(dst_coords)):
-            # Calculate distance between two stars in different images
-            d = sqrt((src_coords[c1][0] - dst_coords[c2][0]) ** 2 + (src_coords[c1][1] - dst_coords[c2][1]) ** 2)
-            # If the distance is lower than 10 px, the two stars match
-            if d < distance:
-                match = [[src_coords[c1][0], src_coords[c1][1]], [dst_coords[c2][0], dst_coords[c2][1]]]
-                matches_list.append(match)
-                match_1.append([src_coords[c1][0], src_coords[c1][1]])
-                match_2.append([dst_coords[c2][0], dst_coords[c2][1]])
+            if src_coords[c1][0] != np.nan and dst_coords[c2][0] != np.nan:
+                # Calculate distance between two stars in different images
+                d = sqrt((src_coords[c1][0] - dst_coords[c2][0]) ** 2 + (src_coords[c1][1] - dst_coords[c2][1]) ** 2)
+                # If the distance is lower than 10 px, the two stars match
+                if d < distance:
+                    match = [[src_coords[c1][0], src_coords[c1][1]], [dst_coords[c2][0], dst_coords[c2][1]]]
+                    matches_list.append(match)
+                    match_1.append((src_coords[c1][0], src_coords[c1][1]))
+                    match_2.append((dst_coords[c2][0], dst_coords[c2][1]))
+                    src_coords[c1][0] = np.nan
+                    dst_coords[c2][0] = np.nan
 
     if len(matches_list) < 4:
         return 0, 0, 0
 
-    return matches_list, np.array(match_1), np.array(match_2)
+    return matches_list, match_1, match_2
 
 
 def stars_box(img, coords, box_size):
@@ -716,7 +808,7 @@ def warp_image(src_img, H):
     warped_img = cv2.warpPerspective(src_img, H, (src_img.shape[1], src_img.shape[0]),
                                      flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT,
                                      borderValue=(0, 0, 0))
-    
+
     return warped_img
 
 
@@ -728,15 +820,42 @@ def join_images(img_list):
     :return: stacked image
     """
     list_sum = np.sum(img_list, axis=0)
-    final_img = list_sum / np.mean(list_sum)
+    final_img = list_sum / len(img_list)
 
     return final_img
+
+def weighted_fusion(img_list, weights_list):
+    """
+    Function that joins a list of images and divides the result by the median of the result
+
+    :param img_list: list of the images to be stacked
+    :return: stacked image
+    """
+
+    result = []
+    for i in range(len(img_list)):
+        result.append(img_list[i] * weights_list[i])
+
+    list_sum = np.sum(result, axis=0)
+    final_img = list_sum
+
+    return final_img
+
+
+def apply_weights(img_list, weights_list):
+    imgs = img_list.copy()
+    weighted_list = []
+    for i in range(len(imgs)):
+        weighted_list.append(imgs[i] * weights_list[i])
+
+    return weighted_list
+
 
 
 '''''''                    QUALITY CHECK                                                                         '''''''
 
 
-def frame_quality(img_list, num, exp_fwhm=7, flux_min=5):
+def frame_quality(img_list, num, th=3, exp_fwhm=7, flux_min=5):
     """
     Function that evaluates every frame in a file, creating a list containing every frame that detectes at least "num"
     of stars. It also removes the background from the frames.
@@ -756,9 +875,9 @@ def frame_quality(img_list, num, exp_fwhm=7, flux_min=5):
             # Acquire background and standard deviation of the frame
             bg, _, _, std = background_noise(img)
             # Prepare frame for identification of stars
-            img = prepare_stars(img, bg)
+            # img = prepare_stars(img, bg)
             # Acquire sources in the images
-            stars = find_stars(img, std, exp_fwhm, flux_min)
+            stars = find_stars(img, std, th, exp_fwhm, flux_min)
             # In case no stars are identified that fit our criteria
             if type(stars) == astropy.units.decorators.NoneType:
                 continue
@@ -768,34 +887,6 @@ def frame_quality(img_list, num, exp_fwhm=7, flux_min=5):
         frame_list.append(tele_list)
 
     return frame_list
-
-
-def stitch_quality(stitched_img, num, exp_fwhm=7, flux_min=25, peak_min=45):
-    """
-    Function that evaluates every stacked image for all 4 telescopes, creating a list containing every image that
-    detectes at least "num" stars. It also removes the background from the stacked images.
-
-    :param stitched_img: master image
-    :param num: number of stars required for the master image to be considered a success
-    :param exp_fwhm: expected fwhm for the stars (optional)
-    :param flux_min_stitch: minimum flux for the 'stitched' star_finder to consider a star (optional)
-    :param peak_min_stitch: minimum flux for the 'stitched' star_finder to consider a star (optional)
-    :return: True -> if the master image is considered good
-             False -> if the master image is considered not good
-    """
-    # Acquire background and standard deviation of the frame
-    bg, _, _, std = background_noise(stitched_img)
-    # Prepare frame for identification of stars
-    stitched_img = prepare_stars(stitched_img, bg)
-    # Acquire sources in the images
-    stars = find_stars(stitched_img, std, exp_fwhm, flux_min, peak_min)
-    # In case no stars are identified that fit our criteria
-    if type(stars) == astropy.units.decorators.NoneType:
-        return False
-    if len(stars) >= num:
-        return True
-    else:
-        return False
 
 
 '''''''                    STITCH FUNCTIONS                                                                      '''''''
@@ -819,11 +910,11 @@ def tele_stitcher(img_list):
     return tele_list
 
 
-def tele_stacker(img_list, wcs, exp_time):
+def tele_stacker(img_list, wcs, exp_time, kernel='quadratic'):
     tele_list = []
     for tele in range(len(img_list[0])):
         # Add all usable frames together
-        driz = drizzle.Drizzle(outwcs=wcs)
+        driz = drizzle.Drizzle(outwcs=wcs, pixfrac=0.5, kernel='lanczos3')
         for frame in range(len(img_list)):
             driz.add_image(img_list[frame][tele], wcs, expin=exp_time)
         # After joining all frames of an telescope, append the final image to a list
@@ -831,8 +922,19 @@ def tele_stacker(img_list, wcs, exp_time):
 
     return tele_list
 
+def drizzle_stacker(img_list, wcs, exp_time, pixfrac=1, kernel='square'):
 
-def final_stitcher(img_list, distance=5, exp_fwhm=7, flux_min=5):
+    driz = drizzle.Drizzle(outwcs=wcs, pixfrac=pixfrac, kernel=kernel)
+    for tele in range(len(img_list)):
+        # Add all usable frames together
+
+        driz.add_image(img_list[tele], wcs, expin=exp_time)
+        # After joining all frames of an telescope, append the final image to a list
+
+    return driz.outsci
+
+
+def final_stitcher(img_list, distance=5, exp_fwhm=7, flux_min=5, peak_min=0, th=3, weighted=[], max_features=10):
     """
     Function to find homography and stitch all the telescope perspectives into a master image
     :param img_list: list of images of the four telescopes
@@ -845,15 +947,62 @@ def final_stitcher(img_list, distance=5, exp_fwhm=7, flux_min=5):
     warped_list = [master_img]
 
     # Acquire coordinates from the reference image
-    master_coords = stars_features(master_img, exp_fwhm, flux_min)
+    master_coords = stars_features(master_img, th, exp_fwhm, flux_min, peak_min=peak_min)
 
     # Iteratively finde the homography and warp all the telescope images
     for tele in range(1, len(img_list)):
-
-        tele_coords = stars_features(img_list[tele], exp_fwhm, flux_min)
+        coords_copy = copy.deepcopy(master_coords)
+        tele_coords = stars_features(img_list[tele], th, exp_fwhm, flux_min, peak_min=peak_min)
 
         # Match the stars between the two images
-        matches, master_match, tele_match = stars_matcher(master_coords, tele_coords, distance)
+        matches, master_match, tele_match = stars_matcher(coords_copy, tele_coords, distance, max_features=max_features)
+
+        if matches == 0:
+            print("NOT ENOUGH MATCHES TO CALCULATE HOMOGRAPHY")
+            return final_img
+
+        # Estimate the homography using the cv2 library
+        H, _ = cv2.findHomography(tele_match, master_match)
+        if len(weighted) == len(img_list):
+            warped_list.append(warp_image(weighted[tele], H))
+            continue
+        # Warp image base on the estimated homography
+        warped_tele = warp_image(img_list[tele], H)
+        # Append the warped image from the telescope into a list
+        warped_list.append(warped_tele)
+
+    if len(weighted) == len(img_list):
+        final_img = np.sum(warped_list, axis=0)
+        return final_img
+
+    final_img = join_images(warped_list)
+
+    return final_img
+
+
+def drizzle_stitcher(img_list, wcs, exp_time,distance=5, exp_fwhm=7, flux_min=5, peak_min=0, th=3,
+                     pixfrac=1, kernel='square', max_features=10):
+    """
+    Function to find homography and stitch all the telescope perspectives into a master image
+    :param img_list: list of images of the four telescopes
+    :param distance: approximated distance between the stars of the reference telescope and the other telescopes
+    :return: master image
+    """
+    final_img = []
+    # Define the telescope 1 as the reference for the stitching
+    master_img = img_list[0]
+    warped_list = [master_img]
+
+    # Acquire coordinates from the reference image
+    master_coords = stars_features(master_img, th, exp_fwhm, flux_min, peak_min=peak_min)
+
+    # Iteratively finde the homography and warp all the telescope images
+    for tele in range(1, len(img_list)):
+        coords_copy = copy.deepcopy(master_coords)
+        tele_coords = stars_features(img_list[tele], th, exp_fwhm, flux_min, peak_min=peak_min)
+
+        # Match the stars between the two images
+        matches, master_match, tele_match = stars_matcher(coords_copy, tele_coords, distance, max_features=max_features)
 
         if matches == 0:
             print("NOT ENOUGH MATCHES TO CALCULATE HOMOGRAPHY")
@@ -867,8 +1016,7 @@ def final_stitcher(img_list, distance=5, exp_fwhm=7, flux_min=5):
         # Append the warped image from the telescope into a list
         warped_list.append(warped_tele)
 
-    # Stack images to form the master image
-    final_img = join_images(warped_list)
+    final_img = drizzle_stacker(warped_list, wcs, exp_time, pixfrac=pixfrac, kernel=kernel)
 
     return final_img
 
@@ -876,7 +1024,7 @@ def final_stitcher(img_list, distance=5, exp_fwhm=7, flux_min=5):
 '''''''                    PLT FUNCTIONS                                                                         '''''''
 
 
-def show_stars(img, amp_max, name='Default Name', ext='img', save=False, folder_path='./stars/stitched/'):
+def show_stars(img, amp_max, amp_min=0, name='Default Name', ext='img', save=False, folder_path='./stars/stitched/'):
     """
     Plot a single image of the stars
 
@@ -886,9 +1034,12 @@ def show_stars(img, amp_max, name='Default Name', ext='img', save=False, folder_
     :param ext: extention for the file
     :param save: If 'True' save file to relative path: ./stars/stitched/
     """
+    if amp_min == 0:
+        # Setup Image Normalization for plot
+        norm = ImageNormalize(stretch=SqrtStretch(), vmax=amp_max, vmin=np.mean(img))
 
-    # Setup Image Normalization for plot
-    norm = ImageNormalize(stretch=SqrtStretch(), vmax=amp_max, vmin=np.mean(img))
+    else:
+        norm = ImageNormalize(stretch=SqrtStretch(), vmax=amp_max)
 
     plt.imshow(img, norm=norm, origin='lower', cmap='inferno',
                interpolation='nearest')
@@ -900,7 +1051,7 @@ def show_stars(img, amp_max, name='Default Name', ext='img', save=False, folder_
     plt.show()
 
 
-def show_apertures(img, src, amp_max, name='Default Name', ext='aprt', save=False, folder_path='./stars/stitched/'):
+def show_apertures(img, src, amp_max, amp_min=0, name='Default Name', ext='aprt', save=False, folder_path='./stars/stitched/'):
     """
     Plot apertures for a single image of the stars
 
@@ -915,7 +1066,12 @@ def show_apertures(img, src, amp_max, name='Default Name', ext='aprt', save=Fals
     apertures = CircularAperture(positions, r=4.0)
 
     # Setup Image Normalization for plot
-    norm = ImageNormalize(stretch=SqrtStretch(), vmax=amp_max, vmin=np.mean(img))
+    if amp_min == 0:
+        # Setup Image Normalization for plot
+        norm = ImageNormalize(stretch=SqrtStretch(), vmax=amp_max, vmin=np.mean(img))
+
+    else:
+        norm = ImageNormalize(stretch=SqrtStretch(), vmax=amp_max)
 
     # Plot image
     plt.imshow(img, cmap='inferno', origin='lower', norm=norm,
@@ -1002,7 +1158,8 @@ def print_centroid(positions, stdev_est, names, title='Default Name', name='Defa
     plt.show()
 
 
-def print_fwhm(positions, names, save=False, ext='fwhm_files', folder_path='./stars/graphs/'):
+def print_fwhm(positions, names, save=False, name='default', ext='fwhm_files', xlabel='files', ylabel='Stat',
+               title='Default', folder_path='./stars/graphs/'):
     """
     Function to plot the centroid of the star with the standard deviation
 
@@ -1013,17 +1170,18 @@ def print_fwhm(positions, names, save=False, ext='fwhm_files', folder_path='./st
     median = np.median(positions)
     # Plot image
     plt.figure()
-    plt.title('FWHM per file')
-    plt.errorbar(np.arange(len(names)), positions, fmt='.', ecolor='g', capsize=5)
+    plt.title(title)
+    # plt.errorbar(np.arange(len(names)), positions, fmt='.', ecolor='g', capsize=5)
+    plt.plot(np.arange(len(names)), positions, 'b.')
     # Plot median line
     plt.axhline(median, color='r', linestyle='--')
     plt.xticks(np.arange(len(names)), names, rotation=90)
-    plt.ylabel('FWHM')
-    plt.xlabel('files')
+    plt.ylabel(ylabel)
+    plt.xlabel(xlabel)
     plt.grid()
     plt.tight_layout()
     if save is True:
-        full_path = os.path.join(folder_path, '{}.png'.format(ext))
+        full_path = os.path.join(folder_path, '{}_{}.png'.format(name, ext))
         plt.savefig(full_path)
 
     plt.show()
@@ -1152,11 +1310,12 @@ def plt_tele_hist(data_list, name='Default Name', ext='Data', telescope=1, xlabe
 
 
 def plt_file_dist(data_list, name='Default Name', exp_time=1, error=[], ext='Data', ylabel='', xlabel='', save=False,
-                   folder_path='./stars/graphs/'):
+                  folder_path='./stars/graphs/'):
 
     x = np.arange(0, len(data_list[0]) * exp_time, exp_time)
 
-    fig, axs = plt.subplots(nrows=len(data_list), ncols=2, figsize=(8.3, 11.7))
+    fig, axs = plt.subplots(nrows=len(data_list), ncols=2, figsize=(8.3, 11.7), gridspec_kw={'width_ratios': [1, 2]}
+                            )
     fig.suptitle(name)
 
     hist_list = []
@@ -1205,8 +1364,43 @@ def plt_file_dist(data_list, name='Default Name', exp_time=1, error=[], ext='Dat
 
         axs[i, 1].axhline(mean_list[i], color='r', linestyle='--')
 
-        axs[i, 1].set_ylim(min_y, max_y)
-        axs[i, 0].set_xlim(min_y, max_y)
+        # axs[i, 1].set_ylim(min_y, max_y)
+        # axs[i, 0].set_xlim(min_y, max_y)
+
+    plt.tight_layout()
+
+    if save is True:
+        full_path = os.path.join(folder_path, '{}_hist_{}.png'.format(name, ext))
+        plt.savefig(full_path)
+    plt.show()
+
+
+def plt_file_ang(data_list, name='Default Name', exp_time=1, error=[], ext='Data', ylabel='', xlabel='', save=False,
+                  folder_path='./stars/graphs/'):
+    x = np.arange(0, len(data_list[0]) * exp_time, exp_time)
+
+    fig, axs = plt.subplots(nrows=len(data_list), ncols=1, figsize=(8.3, 11.7))
+    fig.suptitle(name)
+
+    if len(error) > 0:
+
+        for i in range(len(data_list)):
+            axs[i].errorbar(x, data_list[i], yerr=error[i], fmt='o', ecolor='black',
+                               capsize=5)
+
+    else:
+        for i in range(len(data_list)):
+            axs[i].plot(x, data_list[i], 'b.')
+
+    for i in range(len(data_list)):
+        axs[i].set_title('Telescope #{}'.format(i + 1))
+        axs[i].set_ylabel(ylabel)
+        axs[i].set_xlabel(xlabel)
+
+        axs[i].axhline(np.nanmean(data_list[i]), color='r', linestyle='--')
+
+        # axs[i, 1].set_ylim(min_y, max_y)
+        # axs[i, 0].set_xlim(min_y, max_y)
 
     plt.tight_layout()
 
@@ -1221,20 +1415,20 @@ def plt_file_stats(data_list, name='Default Name', exp_time=1, save=False, folde
     x = np.arange(0, len(data_list[0][0]) * exp_time, exp_time)
     stat_name = ['c_x', 'c_y', 'sigma', 'max_a']
     y_label = ['Centroid x', 'Centroid y', 'Sigma', 'Amplitude']
-
+    # TODO ALTERAR OS IFS NUM PARA SO DAR HISTO NOS DOIS PRIMEIROS PARA O RATIO
     for num in range(4):
         if num < 2:
-            ncols=2
+            fig, axs = plt.subplots(nrows=len(data_list[0]), ncols=2, figsize=(8.3, 11.7),
+                                    gridspec_kw={'width_ratios': [1, 2]})
         else:
-            ncols=1
+            fig, axs = plt.subplots(nrows=len(data_list[0]), ncols=1, figsize=(8.3, 11.7))
 
-        fig, axs = plt.subplots(nrows=len(data_list[0]), ncols=ncols, figsize=(8.3, 11.7))
         fig.suptitle(name)
 
         if num < 2:
 
             max_y = 0
-            min_y = 100000
+            min_y = 10000000
 
             for tele in range(len(data_list[num])):
                 hist_data, sigma, mean, x_hist, y_hist = pos_std(data_list[num][tele])
@@ -1265,29 +1459,7 @@ def plt_file_stats(data_list, name='Default Name', exp_time=1, save=False, folde
                 axs[tele, 0].set_xlabel(y_label[num])
                 axs[tele, 0].set_ylabel('Probability')
 
-                total = np.array(data_list[num][tele]) + sigma
-
-                maxi = np.nanmax(total)
-                mini = np.nanmin(total)
-
-                if max_y < maxi:
-                    max_y = maxi
-
-                if min_y > mini:
-                    min_y = mini
-
-            for i in range(len(data_list[num])):
-                axs[i, 1].set_ylim(min_y, max_y)
-                axs[i, 0].set_xlim(min_y, max_y)
-
         else:
-
-            # total = np.array(data_list[num]) + np.array(data_list[num+2])
-            # mask_nan = np.isnan(total)
-            # new_err = np.array(total)[np.logical_not(mask_nan)]
-            #
-            # max_y = np.max(new_err)
-            # min_y = np.min(new_err)
 
             for tele in range(len(data_list[num])):
 
@@ -1301,7 +1473,7 @@ def plt_file_stats(data_list, name='Default Name', exp_time=1, save=False, folde
                 #     if not np.isnan(pos_list[i]):
                     # plt.fill_between(x, pos_list - error, pos_list + error, alpha=0.3)
                 axs[tele].errorbar(x, data_list[num][tele], yerr=data_list[num+2][tele], fmt='o', ecolor='black',
-                                 capsize=5)
+                                   capsize=5)
                 axs[tele].set_ylabel(y_label[num])
                 axs[tele].set_xlabel('Time (s)')
                 axs[tele].axhline(median, color='r', linestyle='--')
@@ -1314,6 +1486,7 @@ def plt_file_stats(data_list, name='Default Name', exp_time=1, save=False, folde
             full_path = os.path.join(folder_path, '{}_stat_{}.png'.format(name, stat_name[num]))
             plt.savefig(full_path)
         plt.show()
+
 
 '''''''                    DATA GENERATION                                                                       '''''''
 
@@ -1403,3 +1576,311 @@ def generate_data(num_src, focus, amp_max, amp_min, dist=5, fwhm=5, shape=(250, 
         img_list.append(new_img)
 
     return img_list, homography_list
+
+
+def quality_check(img_list, th=3, exp_fwhm=7, flux_min=5, roi=[], iso_box=9, peak_min=45):
+
+    maximum = []
+    max_list = []
+
+    for tele in range(len(img_list[0])):
+        value = 0
+        maximum_tele =[]
+        for frame in range(len(img_list)):
+
+            _, _, _, std = background_noise(img_list[frame][tele])
+            stars = find_stars(img_list[frame][tele], std, th=th, exp_fwhm=exp_fwhm, flux_min=flux_min, roi=roi)
+            if stars is None:
+                maximum_tele.append(np.nan)
+                continue
+
+            brightest = main_stars(stars, 1)
+            # box = sf.stars_box(image, brightest, 9)
+            _, star_max, amp_max, _, _, _ = star_stats(img_list[frame][tele], brightest[0], std=std, iso_box=iso_box, plt_gauss=False)
+            if star_max is np.nan:
+                maximum_tele.append(np.nan)
+                continue
+            maximum_tele.append(star_max)
+            if value < amp_max:
+                value = amp_max
+        max_list.append(value)
+        maximum.append(maximum_tele)
+
+    return maximum, max_list
+
+
+def get_top_indices(lst, num=0.1):
+    num_values = len(lst)
+    num_top_values = int(num_values * num)
+
+    indexed_lst = [(i, value) for i, value in enumerate(lst)]
+
+
+    sorted_lst = sorted(indexed_lst, key=lambda x: x[1], reverse=True)
+
+
+    top_indices = [index for index, _ in sorted_lst[:num_top_values]]
+
+    return top_indices
+
+
+def lucky_sr(img_list, th=3, exp_fwhm=7, flux_min=0, roi=[], iso_box=9, num=0.1, distance=5,
+             weight=False, peak_min=0, sigma=7, ksize=7, max_features=10):
+    max_list, star_max = quality_check(img_list, th=th, exp_fwhm=exp_fwhm, flux_min=flux_min, roi=roi, iso_box=iso_box, peak_min=peak_min)
+    sr_list = []
+
+    for tele in range(len(img_list[0])):
+
+        top_indeces = get_top_indices(max_list[tele], num)
+        new_list = []
+        for i in range(len(top_indeces)):
+            new_list.append(img_list[top_indeces[i]][tele])
+
+        if weight is True:
+            weights = weight_calc(new_list, max_list[tele], sigma=sigma, ksize=ksize)
+            weighted = apply_weights(new_list, weights)
+
+            sr_list.append(final_stitcher(new_list, th=th, exp_fwhm=exp_fwhm, flux_min=flux_min, distance=distance,
+                                          weighted=weighted, peak_min=peak_min, max_features=max_features))
+        else:
+            sr_list.append(final_stitcher(new_list, th=th, exp_fwhm=exp_fwhm, flux_min=flux_min, distance=distance,
+                                          weighted=[], peak_min=peak_min, max_features=max_features))
+
+    return sr_list
+
+
+def conv_wcs(wcs):
+    # Get the reference pixel coordinates (assuming 1-indexed convention)
+    ref_pixel_x = wcs.wcs.crpix[0]
+    ref_pixel_y = wcs.wcs.crpix[1]
+
+    ref_ra, ref_dec = wcs.wcs_pix2world(ref_pixel_x, ref_pixel_y, 0)
+
+    wcs.wcs.ctype = ['RA---TAN', 'DEC--TAN']
+
+    wcs.wcs.crpix[0] = ref_pixel_x
+    wcs.wcs.crpix[1] = ref_pixel_y
+
+
+    wcs.wcs.crval[0] = ref_ra
+    wcs.wcs.crval[1] = ref_dec
+    return wcs
+
+
+def ccdproc_sr(img_list, wcs):
+
+    new_wcs = conv_wcs(wcs)
+    sr_list = []
+    for tele in range(len(img_list[0])):
+        frame_list = []
+        for frame in range(len(img_list)):
+
+            frame_list.append(wcs_project(CCDData(data=img_list[frame][tele], unit='adu', wcs=new_wcs), new_wcs))
+        combiner = Combiner(frame_list)
+        sr_list.append(combiner.average_combine())
+
+    return sr_list
+
+
+def weighted_avg(img_list, th=3, exp_fwhm=7, flux_min=5, roi=[], iso_box=9, peak_min=0, sigma=7, ksize=7):
+    max_list, star_max = quality_check(img_list, th=th, exp_fwhm=exp_fwhm, flux_min=flux_min, roi=roi, iso_box=iso_box, peak_min=peak_min)
+    sr_list = []
+
+    for tele in range(len(img_list[0])):
+        tele_list = []
+        for frame in range(len(img_list)):
+            tele_list.append(img_list[frame][tele])
+
+        weights = weight_calc(tele_list, max_list[tele], sigma=sigma, ksize=ksize)
+
+        sr_list.append(weighted_fusion(tele_list, weights))
+
+    return sr_list
+
+
+def contrast(image, max_val, ksize=5):
+
+    img = normalize_img(image, max_val)
+    laplacian = cv2.Laplacian(img.astype('float64'), cv2.CV_64F, ksize)
+    C = cv2.convertScaleAbs(laplacian)
+    C = cv2.medianBlur(C.astype('float32'), 3)
+    return C.astype('float64')
+
+
+"""
+Well-exposedness Quality Measure
+"""  
+###############################################################################
+def exposedness(image, max_val, sigma=7):
+
+    gauss_curve = lambda i : np.exp(-((i-0.5)**2) / (2*sigma*sigma))
+    img = normalize_img(image, max_val)
+    E_gauss_curve = gauss_curve(img)
+
+    return E_gauss_curve.astype('float64')
+
+
+def clearPixeis(image, thresh):
+    img = image.copy()
+    mean = np.mean(img)
+    h = img.shape[0]
+    w = img.shape[1]
+
+    for y in range(0, h):
+        for x in range(0, w):
+            if img[y, x] >= thresh or img[y, x] < 0:
+                img[y, x] = mean
+
+    return img
+
+
+def weight_calc(img_list, max_list, sigma=7, ksize=7):
+    weights = scalar_weight_map(img_list, max_list, ksize=ksize, sigma=sigma)
+    return weights
+
+
+def scalar_weight_map(image_stack, max_list, weights=[1,1], sigma=7, ksize=7):
+    H = np.shape(image_stack[0])[0]
+    W = np.shape(image_stack[0])[1]
+    D = len(image_stack)
+    Wijk = np.zeros((H, W, D), dtype='float64')
+    wc = weights[0]
+    we = weights[1]
+    # print("Computing Weight Maps from Measures using: C=%1.1d, S=%1.1d, E=%1.1d" % (wc, ws, we))
+
+    for i in range(D):
+        C = contrast(image_stack[i], max_val=max_list[i], ksize=ksize)
+        # print("contrast", np.shape(C))
+        E = exposedness(image_stack[i], max_val=max_list[i], sigma=sigma)
+        # print("exposedness", np.shape(E))
+        Wijk[:, :, i] = (np.power(C, wc) * np.power(E, we))
+        # print("Wijk", np.shape(Wijk[:, :, i]))
+    normalizer = np.sum(Wijk, 2)
+    weight_list = []
+    for i in range(D):
+        weight_list.append(np.divide(Wijk[:, :, i], normalizer).astype('float64'))
+        # Wijk[:, :, i] = np.divide(Wijk[:, :, i], normalizer)
+        # print("Wijk", np.shape(Wijk[:, :, i]))
+    # print(" *Done")
+    # print("\n")
+    return weight_list
+    # return Wijk.astype('float64')
+###############################################################################
+
+
+def aa_stitching(img_list, distance=5, exp_fwhm=7, flux_min=5, th=3, peak_min=45):
+    master_coords = stars_features(img_list[0], exp_fwhm=7, flux_min=0, peak_min=0, roi=[], th=3)
+    warped_list = [img_list[0]]
+    # Iteratively finde the homography and warp all the telescope images
+    for tele in range(1, len(img_list)):
+        coords_copy = copy.deepcopy(master_coords)
+        tele_coords = stars_features(img_list[tele], exp_fwhm=exp_fwhm, flux_min=flux_min, peak_min=peak_min, th=th)
+        matches, master_match, tele_match = stars_matcher_1(coords_copy, tele_coords, 7)
+        tform, (source_list, target_list) = aa.find_transform(tele_match, master_match, max_control_points=10)
+        H, _ = cv2.findHomography(tele_match, master_match)
+
+        # Warp image base on the estimated homography
+        warped_tele = warp_image(img_list[tele], H)
+        # Append the warped image from the telescope into a list
+        warped_list.append(warped_tele)
+
+        # Stack images to form the master image
+
+    final_img = join_images(warped_list)
+
+    return final_img
+
+
+def generate_stats_table(data, name='Default Name', ext='Table',
+                  folder_path='./stars/graphs/'):
+    column_names = [
+        'Telescope',
+        'Centroid (x)',
+        'Centroid (y)',
+        'Sigma',
+        'Maximum Amplitude',
+        'Distance (2 brightest)',
+        'Angle (2 brightest)',
+        'Distance (2nd and 3rd)',
+        'Angle (2nd and 3rd)'
+    ]
+    table = Table(names=column_names)
+
+    for telescope_stats in data:
+        table.add_row(telescope_stats)
+
+    full_path = os.path.join(folder_path, '{}_stats_{}.txt'.format(name, ext))
+    table.write(full_path, format='ascii.latex', formats={'X Position': '%.5f', 'Y Position': '%.5f'},
+           latexdict={'preamble': '\\begin{center}', 'tablefoot': '\\end{center}'},
+           caption='Table of identified stars.', names=table.colnames, overwrite=True)
+
+def star_distance_2(img_o, srcs, std=0, mask=True, iso_box=9, error=0):
+    centroid_list = []
+    for src in srcs:
+        fit_p, gauss2d_fit, star_pixels, masked = fit_star(img_o, src, std, mask, iso_box)
+
+        y, x = np.mgrid[:2 * iso_box, :2 * iso_box]
+        # Acquire new centroid
+        c_x, c_y = gauss2d_fit.x_mean.value, gauss2d_fit.y_mean.value
+        centroid_list.append([src[1] - (iso_box - c_x), src[2] - (iso_box - c_y)])
+
+        cov_matrix = fit_p.fit_info['param_cov']
+
+
+    distance = sqrt(
+        (centroid_list[0][0] - centroid_list[1][0]) ** 2 + (centroid_list[0][1] - centroid_list[1][1]) ** 2)
+
+    angle = mp.atan((centroid_list[0][1] - centroid_list[1][1]) / (centroid_list[0][0] - centroid_list[1][0]))
+
+    return distance, float(str(mp.degrees(angle)))
+
+
+def star_stats_2(img_o, src, std=0, name='Default Name', iso_box=9, plt_gauss=True, save=False):
+    """
+    Function to calculate Full Width Half Maximum of a star
+
+    :param img_o: image to acquire the star
+    :param src: coordinates of the centroid of the star
+    :param std: standard deviation used to acquire stars, if std=0, calculated from the isolated star pixels
+    :param name: name of the file
+    :param iso_box: expected odd fwhm for the star (optional)
+    :param plt_gauss: True -> plt brighest star and fitted gaussian |
+                      False -> don't plt brighest star and fitted gaussian
+    :param save: True -> Save the image in "brightest" folder |
+                 False -> Don't save the image
+    :return: full width half maximum of the star, the standard deviation of the position of the star and the maximum
+    amplitude of the star
+    """
+    fit_p, gauss2d_fit, star_pixels, masked = fit_star(img_o, src, std, iso_box=iso_box)
+
+    amp_max = np.max(masked)
+
+    y, x = np.mgrid[:2 * iso_box, :2 * iso_box]
+
+    sigma = np.mean([gauss2d_fit.x_stddev.value, gauss2d_fit.y_stddev.value])
+
+    # Acquire max value of the star
+    star_max = np.max(gauss2d_fit(x, y))
+
+    # Acquire new centroid
+    c_x, c_y = gauss2d_fit.x_mean.value, gauss2d_fit.y_mean.value
+    centroid = [src[1]-(iso_box-c_x), src[2]-(iso_box-c_y)]
+
+    if plt_gauss is True:
+        # Create a figure and subplots
+        fig, axs = plt.subplots(nrows=1, ncols=2)
+
+        # Plot each image in a subplot
+        axs[0].imshow(star_pixels, origin='lower', cmap='inferno', vmax=amp_max)
+        axs[1].imshow(gauss2d_fit(x, y), origin='lower', cmap='inferno')
+
+        # Idetify telescope in subplot
+        axs[0].set_title('Original Star')
+        axs[1].set_title('Fitted Gaussian')
+
+        plt.tight_layout()
+        if save is True:
+            plt.savefig('./stars/brightest/{}_{}.png'.format(name, 'brightest_star'))
+        plt.show()
+
+    return sigma, star_max, amp_max, centroid

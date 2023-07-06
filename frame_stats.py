@@ -24,7 +24,8 @@ m2 = [150, 200, 50, 100]
 m3 = [50, 100, 140, 200]
 
 #            1   2   3    4    5    6    7    8    9    10   11   12   13   14  15   16   17  18  19   20   21
-roi_list = [[], [], m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, [], m1, m1, [], [], m1, m1]
+# roi_list = [[], [], m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, [], m1, m1, [], [], m1, m1]
+roi_list = [m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, m1, m1]
 out_list = [4,  5,  3,  7,  5,   5,  5,  5,  3,  3,  3,  7, 2.5, 7, 10, 5,  10,  7,  7,  3,  7]
 iso_list = [7,  7,  9,  9,  9,   9,  9,  9,  7,  7,  7,  9,  9,  9,   7, 9,  7,  7,  9,  9,  9]
 exp_list = [5,  5,  7,  7,  7,   7,  7,  7,  5,  5,  5,  7,  7,  7,   5, 7,  5,  5,  7,  7,  7]
@@ -54,7 +55,7 @@ for fits_file in stars_files:
     #                                                                       exp_fwhm=exp_list[file_counter-1],
     #                                                                       outlier=out_list[file_counter-1], mask=True)
     data_list = sf.file_statistics(images, flux_min=0, iso_box=iso_list[file_counter - 1],
-                                   exp_fwhm=exp_list[file_counter - 1], outlier=out_list[file_counter - 1], mask=True)
+                                   exp_fwhm=exp_list[file_counter - 1], outlier=out_list[file_counter - 1], mask=True, roi=m1)
 
     # for tele in range(len(pos_x)):
     #     sigma_x = sf.plt_tele_hist(pos_x[tele], name=name, ext='cx', telescope=tele + 1, xlabel='centroid_x',
@@ -71,8 +72,8 @@ for fits_file in stars_files:
     #                      save=True)
     #     sf.plt_tele_stat(amp_max[tele], time, amp_err[tele], name=name, telescope=tele + 1, ylabel='Maximum Amplitude', ext='amp',
     #                      save=True)
-
-    sf.plt_file_stats(data_list, name=name, exp_time=time, save=True, folder_path='./stars/file_stats1/')
+    # TODO alterar para um for/chamar funcção
+    sf.plt_file_stats(data_list, name=name, exp_time=time, save=True, folder_path='./stars/file_stats/')
 
     # break
 '''''''                 DATA ANALYSIS                                                                            '''''''
