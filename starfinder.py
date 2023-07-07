@@ -488,11 +488,6 @@ def star_distance(img_o, srcs, std=0, mask=True, iso_box=9, error=0):
 
         cov_matrix = fit_p.fit_info['param_cov']
 
-
-        #TODO CHECK THIS
-        # Evaluate the fit
-        # ALTERAR COMO ESTA PARA OS STATS
-
         # residuals = masked - gauss2d_fit(x, y)
         # mse = np.mean(residuals ** 2)
         # rmse = np.sqrt(mse)
@@ -1814,73 +1809,73 @@ def generate_stats_table(data, name='Default Name', ext='Table',
            latexdict={'preamble': '\\begin{center}', 'tablefoot': '\\end{center}'},
            caption='Table of identified stars.', names=table.colnames, overwrite=True)
 
-def star_distance_2(img_o, srcs, std=0, mask=True, iso_box=9, error=0):
-    centroid_list = []
-    for src in srcs:
-        fit_p, gauss2d_fit, star_pixels, masked = fit_star(img_o, src, std, mask, iso_box)
-
-        y, x = np.mgrid[:2 * iso_box, :2 * iso_box]
-        # Acquire new centroid
-        c_x, c_y = gauss2d_fit.x_mean.value, gauss2d_fit.y_mean.value
-        centroid_list.append([src[1] - (iso_box - c_x), src[2] - (iso_box - c_y)])
-
-        cov_matrix = fit_p.fit_info['param_cov']
-
-
-    distance = sqrt(
-        (centroid_list[0][0] - centroid_list[1][0]) ** 2 + (centroid_list[0][1] - centroid_list[1][1]) ** 2)
-
-    angle = mp.atan((centroid_list[0][1] - centroid_list[1][1]) / (centroid_list[0][0] - centroid_list[1][0]))
-
-    return distance, float(str(mp.degrees(angle)))
-
-
-def star_stats_2(img_o, src, std=0, name='Default Name', iso_box=9, plt_gauss=True, save=False):
-    """
-    Function to calculate Full Width Half Maximum of a star
-
-    :param img_o: image to acquire the star
-    :param src: coordinates of the centroid of the star
-    :param std: standard deviation used to acquire stars, if std=0, calculated from the isolated star pixels
-    :param name: name of the file
-    :param iso_box: expected odd fwhm for the star (optional)
-    :param plt_gauss: True -> plt brighest star and fitted gaussian |
-                      False -> don't plt brighest star and fitted gaussian
-    :param save: True -> Save the image in "brightest" folder |
-                 False -> Don't save the image
-    :return: full width half maximum of the star, the standard deviation of the position of the star and the maximum
-    amplitude of the star
-    """
-    fit_p, gauss2d_fit, star_pixels, masked = fit_star(img_o, src, std, iso_box=iso_box)
-
-    amp_max = np.max(masked)
-
-    y, x = np.mgrid[:2 * iso_box, :2 * iso_box]
-
-    sigma = np.mean([gauss2d_fit.x_stddev.value, gauss2d_fit.y_stddev.value])
-
-    # Acquire max value of the star
-    star_max = np.max(gauss2d_fit(x, y))
-
-    # Acquire new centroid
-    c_x, c_y = gauss2d_fit.x_mean.value, gauss2d_fit.y_mean.value
-    centroid = [src[1]-(iso_box-c_x), src[2]-(iso_box-c_y)]
-
-    if plt_gauss is True:
-        # Create a figure and subplots
-        fig, axs = plt.subplots(nrows=1, ncols=2)
-
-        # Plot each image in a subplot
-        axs[0].imshow(star_pixels, origin='lower', cmap='inferno', vmax=amp_max)
-        axs[1].imshow(gauss2d_fit(x, y), origin='lower', cmap='inferno')
-
-        # Idetify telescope in subplot
-        axs[0].set_title('Original Star')
-        axs[1].set_title('Fitted Gaussian')
-
-        plt.tight_layout()
-        if save is True:
-            plt.savefig('./stars/brightest/{}_{}.png'.format(name, 'brightest_star'))
-        plt.show()
-
-    return sigma, star_max, amp_max, centroid
+# def star_distance_2(img_o, srcs, std=0, mask=True, iso_box=9, error=0):
+#     centroid_list = []
+#     for src in srcs:
+#         fit_p, gauss2d_fit, star_pixels, masked = fit_star(img_o, src, std, mask, iso_box)
+#
+#         y, x = np.mgrid[:2 * iso_box, :2 * iso_box]
+#         # Acquire new centroid
+#         c_x, c_y = gauss2d_fit.x_mean.value, gauss2d_fit.y_mean.value
+#         centroid_list.append([src[1] - (iso_box - c_x), src[2] - (iso_box - c_y)])
+#
+#         cov_matrix = fit_p.fit_info['param_cov']
+#
+#
+#     distance = sqrt(
+#         (centroid_list[0][0] - centroid_list[1][0]) ** 2 + (centroid_list[0][1] - centroid_list[1][1]) ** 2)
+#
+#     angle = mp.atan((centroid_list[0][1] - centroid_list[1][1]) / (centroid_list[0][0] - centroid_list[1][0]))
+#
+#     return distance, float(str(mp.degrees(angle)))
+#
+#
+# def star_stats_2(img_o, src, std=0, name='Default Name', iso_box=9, plt_gauss=True, save=False):
+#     """
+#     Function to calculate Full Width Half Maximum of a star
+#
+#     :param img_o: image to acquire the star
+#     :param src: coordinates of the centroid of the star
+#     :param std: standard deviation used to acquire stars, if std=0, calculated from the isolated star pixels
+#     :param name: name of the file
+#     :param iso_box: expected odd fwhm for the star (optional)
+#     :param plt_gauss: True -> plt brighest star and fitted gaussian |
+#                       False -> don't plt brighest star and fitted gaussian
+#     :param save: True -> Save the image in "brightest" folder |
+#                  False -> Don't save the image
+#     :return: full width half maximum of the star, the standard deviation of the position of the star and the maximum
+#     amplitude of the star
+#     """
+#     fit_p, gauss2d_fit, star_pixels, masked = fit_star(img_o, src, std, iso_box=iso_box)
+#
+#     amp_max = np.max(masked)
+#
+#     y, x = np.mgrid[:2 * iso_box, :2 * iso_box]
+#
+#     sigma = np.mean([gauss2d_fit.x_stddev.value, gauss2d_fit.y_stddev.value])
+#
+#     # Acquire max value of the star
+#     star_max = np.max(gauss2d_fit(x, y))
+#
+#     # Acquire new centroid
+#     c_x, c_y = gauss2d_fit.x_mean.value, gauss2d_fit.y_mean.value
+#     centroid = [src[1]-(iso_box-c_x), src[2]-(iso_box-c_y)]
+#
+#     if plt_gauss is True:
+#         # Create a figure and subplots
+#         fig, axs = plt.subplots(nrows=1, ncols=2)
+#
+#         # Plot each image in a subplot
+#         axs[0].imshow(star_pixels, origin='lower', cmap='inferno', vmax=amp_max)
+#         axs[1].imshow(gauss2d_fit(x, y), origin='lower', cmap='inferno')
+#
+#         # Idetify telescope in subplot
+#         axs[0].set_title('Original Star')
+#         axs[1].set_title('Fitted Gaussian')
+#
+#         plt.tight_layout()
+#         if save is True:
+#             plt.savefig('./stars/brightest/{}_{}.png'.format(name, 'brightest_star'))
+#         plt.show()
+#
+#     return sigma, star_max, amp_max, centroid
